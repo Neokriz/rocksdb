@@ -9,6 +9,8 @@
 
 #include "db/compaction/compaction_job.h"
 
+#include <iostream>
+
 #include <algorithm>
 #include <cinttypes>
 #include <memory>
@@ -288,8 +290,8 @@ void CompactionJob::Prepare() {
   // to encode seqno->time to the output files.
 
   uint64_t preserve_time_duration =
-      std::max(c->mutable_cf_options()->preserve_internal_time_seconds,
-               c->mutable_cf_options()->preclude_last_level_data_seconds);
+      std::max(c->immutable_options()->preserve_internal_time_seconds,
+               c->immutable_options()->preclude_last_level_data_seconds);
 
   if (preserve_time_duration > 0) {
     const ReadOptions read_options(Env::IOActivity::kCompaction);
@@ -326,8 +328,8 @@ void CompactionJob::Prepare() {
       seqno_to_time_mapping_.Enforce(_current_time);
       seqno_to_time_mapping_.GetCurrentTieringCutoffSeqnos(
           static_cast<uint64_t>(_current_time),
-          c->mutable_cf_options()->preserve_internal_time_seconds,
-          c->mutable_cf_options()->preclude_last_level_data_seconds,
+          c->immutable_options()->preserve_internal_time_seconds,
+          c->immutable_options()->preclude_last_level_data_seconds,
           &preserve_time_min_seqno_, &preclude_last_level_min_seqno_);
     }
     // For accuracy of the GetProximalSeqnoBeforeTime queries above, we only
@@ -469,7 +471,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
   ReadOptions read_options(Env::IOActivity::kCompaction);
   read_options.rate_limiter_priority = GetRateLimiterPriority();
   auto* c = compact_->compaction;
-  if (c->mutable_cf_options()->table_factory->Name() ==
+  if (c->immutable_options()->table_factory->Name() ==
       TableFactory::kPlainTableName()) {
     return;
   }
@@ -506,7 +508,9 @@ void CompactionJob::GenSubcompactionBoundaries() {
         FileMetaData* f = flevel->files[i].file_metadata;
         std::vector<TableReader::Anchor> my_anchors;
         Status s = cfd->table_cache()->ApproximateKeyAnchors(
-            read_options, icomp, *f, *c->mutable_cf_options(), my_anchors);
+            read_options, icomp, *f,
+            c->mutable_cf_options()->block_protection_bytes_per_key,
+            my_anchors);
         if (!s.ok() || my_anchors.empty()) {
           my_anchors.emplace_back(f->largest.user_key(), f->fd.GetFileSize());
         }
@@ -709,6 +713,8 @@ Status CompactionJob::Run() {
       }
     }
     ColumnFamilyData* cfd = compact_->compaction->column_family_data();
+    auto& prefix_extractor =
+        compact_->compaction->mutable_cf_options()->prefix_extractor;
     std::atomic<size_t> next_file_idx(0);
     auto verify_table = [&](Status& output_status) {
       while (true) {
@@ -729,8 +735,7 @@ Status CompactionJob::Run() {
         InternalIterator* iter = cfd->table_cache()->NewIterator(
             verify_table_read_options, file_options_,
             cfd->internal_comparator(), files_output[file_idx]->meta,
-            /*range_del_agg=*/nullptr,
-            *compact_->compaction->mutable_cf_options(),
+            /*range_del_agg=*/nullptr, prefix_extractor,
             /*table_reader_ptr=*/nullptr,
             cfd->internal_stats()->GetFileReadHist(
                 compact_->compaction->output_level()),
@@ -740,7 +745,9 @@ Status CompactionJob::Run() {
                 *compact_->compaction->mutable_cf_options()),
             /*smallest_compaction_key=*/nullptr,
             /*largest_compaction_key=*/nullptr,
-            /*allow_unprepared_value=*/false);
+            /*allow_unprepared_value=*/false,
+            compact_->compaction->mutable_cf_options()
+                ->block_protection_bytes_per_key);
         auto s = iter->status();
 
         if (s.ok() && paranoid_file_checks_) {
@@ -1332,6 +1339,18 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       "CompactionJob::ProcessKeyValueCompaction()::Processing",
       static_cast<void*>(const_cast<Compaction*>(sub_compact->compaction)));
   uint64_t last_cpu_micros = prev_cpu_micros;
+
+  // yhh::
+  uint64_t duration_AddToOutput = 0; uint64_t duration_Next = 0; uint64_t while_count = 0;
+
+  
+  //tmp
+  //yhh::
+    std::string log_file_name = "times_addtooutput-next-jID-" + std::to_string(job_id_) + ".log" ;
+    std::ofstream log_file(log_file_name, std::ios::app); // 파일 추가 모드로 열기
+    if (log_file.is_open()) {
+  }
+
   while (status.ok() && !cfd->IsDropped() && c_iter->Valid()) {
     // Invariant: c_iter.status() is guaranteed to be OK if c_iter->Valid()
     // returns true.
@@ -1350,7 +1369,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
                  cur_cpu_micros - last_cpu_micros);
       last_cpu_micros = cur_cpu_micros;
     }
-
+//added byhs,yhh loging next() time
+auto AddToOutput_start = std::chrono::high_resolution_clock::now();
     // Add current compaction_iterator key to target compaction output, if the
     // output file needs to be close or open, it will call the `open_file_func`
     // and `close_file_func`.
@@ -1360,14 +1380,39 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     if (!status.ok()) {
       break;
     }
+//added byhs,yhh loging compaction time
+auto AddToOutput_end = std::chrono::high_resolution_clock::now();
+duration_AddToOutput += std::chrono::duration_cast<std::chrono::nanoseconds>(AddToOutput_end - AddToOutput_start).count();
 
     TEST_SYNC_POINT_CALLBACK("CompactionJob::Run():PausingManualCompaction:2",
                              static_cast<void*>(const_cast<std::atomic<bool>*>(
                                  &manual_compaction_canceled_)));
+
+  //added byhs,yhh loging next() time
+  auto next_start = std::chrono::high_resolution_clock::now();
     c_iter->Next();
     if (c_iter->status().IsManualCompactionPaused()) {
       break;
     }
+//added byhs loging compaction time
+auto next_end = std::chrono::high_resolution_clock::now();
+duration_Next += std::chrono::duration_cast<std::chrono::nanoseconds>(next_end - next_start).count();
+
+while_count++;
+
+//added byhs,yhh loging compaction time
+    //std::string log_file_name = "times_addtooutput-next.log";
+    //std::ofstream log_file(log_file_name, std::ios::app); // 파일 추가 모드로 열기
+    if (log_file.is_open()) {
+    //log_file << job_id_ << " " << duration << std::endl;
+    log_file \
+        //<< "time " << end.count() - start.count() 
+        << "while-count " << while_count \
+        << " AddToOutput-time " << std::chrono::duration_cast<std::chrono::nanoseconds>(AddToOutput_end - AddToOutput_start).count() \
+        << " next-time " << std::chrono::duration_cast<std::chrono::nanoseconds>(next_end - next_start).count() \
+        << std::endl;
+    }
+
 
 #ifndef NDEBUG
     bool stop = false;
@@ -1378,6 +1423,19 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     }
 #endif  // NDEBUG
   }
+
+  //yhh::
+    //std::string log_file_name = "times_addtooutput-next.log";
+    //std::ofstream log_file(log_file_name, std::ios::app); // 파일 추가 모드로 열기
+    if (log_file.is_open()) {
+    //log_file << job_id_ << " " << duration << std::endl;
+    log_file \
+        //<< "time " << end.count() - start.count() 
+        << "Total-count " << while_count \
+        << " AddToOutput " << duration_AddToOutput \
+        << " Next " << duration_Next \
+        << std::endl;
+    }
 
   // This number may not be accurate when CompactionIterator was created
   // with `must_count_input_entries=false`.
@@ -1577,6 +1635,7 @@ Status CompactionJob::FinishCompactionOutputFile(
     }
     RecordDroppedKeys(range_del_out_stats, &sub_compact->compaction_job_stats);
     TEST_SYNC_POINT("CompactionJob::FinishCompactionOutputFile1");
+    //sst_write_count++;
   }
 
   const uint64_t current_entries = outputs.NumEntries();
@@ -1914,10 +1973,6 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
     oldest_ancester_time = current_time;
   }
 
-  uint64_t newest_key_time = sub_compact->compaction->MaxInputFileNewestKeyTime(
-      sub_compact->start.has_value() ? &tmp_start : nullptr,
-      sub_compact->end.has_value() ? &tmp_end : nullptr);
-
   // Initialize a SubcompactionState::Output and add it to sub_compact->outputs
   uint64_t epoch_number = sub_compact->compaction->MinInputFileEpochNumber();
   {
@@ -1967,7 +2022,7 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
       cfd->internal_tbl_prop_coll_factories(),
       sub_compact->compaction->output_compression(),
       sub_compact->compaction->output_compression_opts(), cfd->GetID(),
-      cfd->GetName(), sub_compact->compaction->output_level(), newest_key_time,
+      cfd->GetName(), sub_compact->compaction->output_level(),
       bottommost_level_, TableFileCreationReason::kCompaction,
       0 /* oldest_key_time */, current_time, db_id_, db_session_id_,
       sub_compact->compaction->max_output_file_size(), file_number,
@@ -2007,12 +2062,10 @@ bool CompactionJob::UpdateCompactionStats(uint64_t* num_input_range_del) {
   bool has_error = false;
   const ReadOptions read_options(Env::IOActivity::kCompaction);
   const auto& input_table_properties = compaction->GetInputTableProperties();
-  // TODO(yuzhangyu): add dedicated stats for filtered files.
   for (int input_level = 0;
        input_level < static_cast<int>(compaction->num_input_levels());
        ++input_level) {
-    const LevelFilesBrief* flevel = compaction->input_levels(input_level);
-    size_t num_input_files = flevel->num_files;
+    size_t num_input_files = compaction->num_input_files(input_level);
     uint64_t* bytes_read;
     if (compaction->level(input_level) != compaction->output_level()) {
       compaction_stats_.stats.num_input_files_in_non_output_levels +=
@@ -2024,7 +2077,7 @@ bool CompactionJob::UpdateCompactionStats(uint64_t* num_input_range_del) {
       bytes_read = &compaction_stats_.stats.bytes_read_output_level;
     }
     for (size_t i = 0; i < num_input_files; ++i) {
-      const FileMetaData* file_meta = flevel->files[i].file_metadata;
+      const FileMetaData* file_meta = compaction->input(input_level, i);
       *bytes_read += file_meta->fd.GetFileSize();
       uint64_t file_input_entries = file_meta->num_entries;
       uint64_t file_num_range_del = file_meta->num_range_deletions;

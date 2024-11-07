@@ -139,17 +139,9 @@ ToggleUDT CompareComparator(const Comparator* new_comparator,
 
 TimestampRecoveryHandler::TimestampRecoveryHandler(
     const UnorderedMap<uint32_t, size_t>& running_ts_sz,
-    const UnorderedMap<uint32_t, size_t>& record_ts_sz, bool seq_per_batch,
-    bool batch_per_txn)
+    const UnorderedMap<uint32_t, size_t>& record_ts_sz)
     : running_ts_sz_(running_ts_sz),
       record_ts_sz_(record_ts_sz),
-      // Write after commit currently uses one seq per key (instead of per
-      // batch). So seq_per_batch being false indicates write_after_commit
-      // approach.
-      write_after_commit_(!seq_per_batch),
-      // WriteUnprepared can write multiple WriteBatches per transaction, so
-      // batch_per_txn being false indicates write_before_prepare.
-      write_before_prepare_(!batch_per_txn),
       new_batch_(new WriteBatch()),
       handler_valid_(true),
       new_batch_diff_from_orig_batch_(false) {}
@@ -266,43 +258,6 @@ Status TimestampRecoveryHandler::PutBlobIndexCF(uint32_t cf, const Slice& key,
   return WriteBatchInternal::PutBlobIndex(new_batch_.get(), cf, new_key, value);
 }
 
-Status TimestampRecoveryHandler::MarkBeginPrepare(bool unprepare) {
-  // Transaction policy change requires empty WAL and User-defined timestamp is
-  // only supported for write committed txns.
-  // WriteBatch::Iterate has will handle this based on
-  // handler->WriteAfterCommit() and handler->WriteBeforePrepare().
-  if (unprepare) {
-    return Status::InvalidArgument(
-        "Handle user defined timestamp setting change is not supported for"
-        "write unprepared policy. The WAL must be emptied.");
-  }
-  return WriteBatchInternal::InsertBeginPrepare(new_batch_.get(),
-                                                write_after_commit_,
-                                                /* unprepared_batch */ false);
-}
-
-Status TimestampRecoveryHandler::MarkEndPrepare(const Slice& name) {
-  return WriteBatchInternal::InsertEndPrepare(new_batch_.get(), name);
-}
-
-Status TimestampRecoveryHandler::MarkCommit(const Slice& name) {
-  return WriteBatchInternal::MarkCommit(new_batch_.get(), name);
-}
-
-Status TimestampRecoveryHandler::MarkCommitWithTimestamp(
-    const Slice& name, const Slice& commit_ts) {
-  return WriteBatchInternal::MarkCommitWithTimestamp(new_batch_.get(), name,
-                                                     commit_ts);
-}
-
-Status TimestampRecoveryHandler::MarkRollback(const Slice& name) {
-  return WriteBatchInternal::MarkRollback(new_batch_.get(), name);
-}
-
-Status TimestampRecoveryHandler::MarkNoop(bool /*empty_batch*/) {
-  return WriteBatchInternal::InsertNoop(new_batch_.get());
-}
-
 Status TimestampRecoveryHandler::ReconcileTimestampDiscrepancy(
     uint32_t cf, const Slice& key, std::string* new_key_buf, Slice* new_key) {
   assert(handler_valid_);
@@ -349,8 +304,8 @@ Status HandleWriteBatchTimestampSizeDifference(
     const WriteBatch* batch,
     const UnorderedMap<uint32_t, size_t>& running_ts_sz,
     const UnorderedMap<uint32_t, size_t>& record_ts_sz,
-    TimestampSizeConsistencyMode check_mode, bool seq_per_batch,
-    bool batch_per_txn, std::unique_ptr<WriteBatch>* new_batch) {
+    TimestampSizeConsistencyMode check_mode,
+    std::unique_ptr<WriteBatch>* new_batch) {
   // Quick path to bypass checking the WriteBatch.
   if (AllRunningColumnFamiliesConsistent(running_ts_sz, record_ts_sz)) {
     return Status::OK();
@@ -363,8 +318,7 @@ Status HandleWriteBatchTimestampSizeDifference(
   } else if (need_recovery) {
     assert(new_batch);
     SequenceNumber sequence = WriteBatchInternal::Sequence(batch);
-    TimestampRecoveryHandler recovery_handler(running_ts_sz, record_ts_sz,
-                                              seq_per_batch, batch_per_txn);
+    TimestampRecoveryHandler recovery_handler(running_ts_sz, record_ts_sz);
     status = batch->Iterate(&recovery_handler);
     if (!status.ok()) {
       return status;

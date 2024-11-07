@@ -42,7 +42,6 @@ Status BlobFileCache::GetBlobFileReader(
   assert(blob_file_reader);
   assert(blob_file_reader->IsEmpty());
 
-  // NOTE: sharing same Cache with table_cache
   const Slice key = GetSliceForKey(&blob_file_number);
 
   assert(cache_);
@@ -97,15 +96,6 @@ Status BlobFileCache::GetBlobFileReader(
   *blob_file_reader = cache_.Guard(handle);
 
   return Status::OK();
-}
-
-void BlobFileCache::Evict(uint64_t blob_file_number) {
-  // NOTE: sharing same Cache with table_cache
-  const Slice key = GetSliceForKey(&blob_file_number);
-
-  assert(cache_);
-
-  cache_.get()->Erase(key);
 }
 
 }  // namespace ROCKSDB_NAMESPACE

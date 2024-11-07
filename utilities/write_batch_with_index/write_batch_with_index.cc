@@ -329,8 +329,7 @@ Iterator* WriteBatchWithIndex::NewIteratorWithBase(
   }
 
   return new BaseDeltaIterator(column_family, base_iterator, wbwiii,
-                               GetColumnFamilyUserComparator(column_family),
-                               read_options);
+                               GetColumnFamilyUserComparator(column_family));
 }
 
 Iterator* WriteBatchWithIndex::NewIteratorWithBase(Iterator* base_iterator) {
@@ -338,8 +337,7 @@ Iterator* WriteBatchWithIndex::NewIteratorWithBase(Iterator* base_iterator) {
   auto wbwiii = new WBWIIteratorImpl(0, &(rep->skip_list), &rep->write_batch,
                                      &rep->comparator);
   return new BaseDeltaIterator(nullptr, base_iterator, wbwiii,
-                               rep->comparator.default_comparator(),
-                               /* read_options */ nullptr);
+                               rep->comparator.default_comparator());
 }
 
 Status WriteBatchWithIndex::Put(ColumnFamilyHandle* column_family,

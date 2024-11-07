@@ -659,9 +659,8 @@ Status DBImpl::CloseHelper() {
   // We need to release them before the block cache is destroyed. The block
   // cache may be destroyed inside versions_.reset(), when column family data
   // list is destroyed, so leaving handles in table cache after
-  // versions_.reset() may cause issues. Here we clean all unreferenced handles
-  // in table cache, and (for certain builds/conditions) assert that no obsolete
-  // files are hanging around unreferenced (leak) in the table/blob file cache.
+  // versions_.reset() may cause issues.
+  // Here we clean all unreferenced handles in table cache.
   // Now we assume all user queries have finished, so only version set itself
   // can possibly hold the blocks from block cache. After releasing unreferenced
   // handles here, only handles held by version set left and inside
@@ -669,9 +668,6 @@ Status DBImpl::CloseHelper() {
   // time a handle is released, we erase it from the cache too. By doing that,
   // we can guarantee that after versions_.reset(), table cache is empty
   // so the cache can be safely destroyed.
-#ifndef NDEBUG
-  TEST_VerifyNoObsoleteFilesCached(/*db_mutex_already_held=*/true);
-#endif  // !NDEBUG
   table_cache_->EraseUnRefEntries();
 
   for (auto& txn_entry : recovered_transactions_) {
@@ -852,11 +848,10 @@ Status DBImpl::RegisterRecordSeqnoTimeWorker(const ReadOptions& read_options,
     InstrumentedMutexLock l(&mutex_);
 
     for (auto cfd : *versions_->GetColumnFamilySet()) {
-      auto& mopts = *cfd->GetLatestMutableCFOptions();
       // preserve time is the max of 2 options.
       uint64_t preserve_seconds =
-          std::max(mopts.preserve_internal_time_seconds,
-                   mopts.preclude_last_level_data_seconds);
+          std::max(cfd->ioptions()->preserve_internal_time_seconds,
+                   cfd->ioptions()->preclude_last_level_data_seconds);
       if (!cfd->IsDropped() && preserve_seconds > 0) {
         min_preserve_seconds = std::min(preserve_seconds, min_preserve_seconds);
         max_preserve_seconds = std::max(preserve_seconds, max_preserve_seconds);
@@ -1158,13 +1153,6 @@ void DBImpl::DumpStats() {
         continue;
       }
 
-      auto* table_factory =
-          cfd->GetCurrentMutableCFOptions()->table_factory.get();
-      assert(table_factory != nullptr);
-      // FIXME: need to a shared_ptr if/when block_cache is going to be mutable
-      Cache* cache =
-          table_factory->GetOptions<Cache>(TableFactory::kBlockCacheOpts());
-
       // Release DB mutex for gathering cache entry stats. Pass over all
       // column families for this first so that other stats are dumped
       // near-atomically.
@@ -1173,6 +1161,10 @@ void DBImpl::DumpStats() {
 
       // Probe block cache for problems (if not already via another CF)
       if (immutable_db_options_.info_log) {
+        auto* table_factory = cfd->ioptions()->table_factory.get();
+        assert(table_factory != nullptr);
+        Cache* cache =
+            table_factory->GetOptions<Cache>(TableFactory::kBlockCacheOpts());
         if (cache && probed_caches.insert(cache).second) {
           cache->ReportProblems(immutable_db_options_.info_log);
         }
@@ -3235,8 +3227,6 @@ Status DBImpl::MultiGetImpl(
       s = Status::Aborted();
       break;
     }
-    // This could be a long-running operation
-    ROCKSDB_THREAD_YIELD_HOOK();
   }
 
   // Post processing (decrement reference counts and record statistics)
@@ -3720,9 +3710,6 @@ Status DBImpl::DropColumnFamilyImpl(ColumnFamilyHandle* column_family) {
   edit.SetColumnFamily(cfd->GetID());
 
   Status s;
-  // Save re-aquiring lock for RegisterRecordSeqnoTimeWorker when not
-  // applicable
-  bool used_preserve_preclude = false;
   {
     InstrumentedMutexLock l(&mutex_);
     if (cfd->IsDropped()) {
@@ -3738,11 +3725,9 @@ Status DBImpl::DropColumnFamilyImpl(ColumnFamilyHandle* column_family) {
       write_thread_.ExitUnbatched(&w);
     }
     if (s.ok()) {
-      auto& moptions = *cfd->GetLatestMutableCFOptions();
-      max_total_in_memory_state_ -=
-          moptions.write_buffer_size * moptions.max_write_buffer_number;
-      used_preserve_preclude = moptions.preserve_internal_time_seconds > 0 ||
-                               moptions.preclude_last_level_data_seconds > 0;
+      auto* mutable_cf_options = cfd->GetLatestMutableCFOptions();
+      max_total_in_memory_state_ -= mutable_cf_options->write_buffer_size *
+                                    mutable_cf_options->max_write_buffer_number;
     }
 
     if (!cf_support_snapshot) {
@@ -3760,7 +3745,8 @@ Status DBImpl::DropColumnFamilyImpl(ColumnFamilyHandle* column_family) {
     bg_cv_.SignalAll();
   }
 
-  if (used_preserve_preclude) {
+  if (cfd->ioptions()->preserve_internal_time_seconds > 0 ||
+      cfd->ioptions()->preclude_last_level_data_seconds > 0) {
     s = RegisterRecordSeqnoTimeWorker(read_options, write_options,
                                       /* is_new_db */ false);
   }
@@ -3998,25 +3984,14 @@ std::unique_ptr<IterType> DBImpl::NewMultiCfIterator(
           "Different comparators are being used across CFs"));
     }
   }
-
   std::vector<Iterator*> child_iterators;
   Status s = NewIterators(_read_options, column_families, &child_iterators);
   if (!s.ok()) {
     return error_iterator_func(s);
   }
-
-  assert(column_families.size() == child_iterators.size());
-
-  std::vector<std::pair<ColumnFamilyHandle*, std::unique_ptr<Iterator>>>
-      cfh_iter_pairs;
-  cfh_iter_pairs.reserve(column_families.size());
-  for (size_t i = 0; i < column_families.size(); ++i) {
-    cfh_iter_pairs.emplace_back(column_families[i], child_iterators[i]);
-  }
-
-  return std::make_unique<ImplType>(_read_options,
-                                    column_families[0]->GetComparator(),
-                                    std::move(cfh_iter_pairs));
+  return std::make_unique<ImplType>(column_families[0]->GetComparator(),
+                                    column_families,
+                                    std::move(child_iterators));
 }
 
 Status DBImpl::NewIterators(
@@ -4320,8 +4295,8 @@ void DBImpl::ReleaseSnapshot(const Snapshot* s) {
     }
     // Avoid to go through every column family by checking a global threshold
     // first.
-    CfdList cf_scheduled;
     if (oldest_snapshot > bottommost_files_mark_threshold_) {
+      CfdList cf_scheduled;
       for (auto* cfd : *versions_->GetColumnFamilySet()) {
         if (!cfd->ioptions()->allow_ingest_behind) {
           cfd->current()->storage_info()->UpdateOldestSnapshot(
@@ -4352,24 +4327,6 @@ void DBImpl::ReleaseSnapshot(const Snapshot* s) {
             cfd->current()->storage_info()->bottommost_files_mark_threshold());
       }
       bottommost_files_mark_threshold_ = new_bottommost_files_mark_threshold;
-    }
-
-    // Avoid to go through every column family by checking a global threshold
-    // first.
-    if (oldest_snapshot >= standalone_range_deletion_files_mark_threshold_) {
-      for (auto* cfd : *versions_->GetColumnFamilySet()) {
-        if (cfd->IsDropped() || CfdListContains(cf_scheduled, cfd)) {
-          continue;
-        }
-        if (oldest_snapshot >=
-            cfd->current()
-                ->storage_info()
-                ->standalone_range_tombstone_files_mark_threshold()) {
-          EnqueuePendingCompaction(cfd);
-          MaybeScheduleFlushOrCompaction();
-          cf_scheduled.push_back(cfd);
-        }
-      }
     }
   }
   delete casted_s;
@@ -4746,9 +4703,9 @@ void DBImpl::GetApproximateMemTableStats(ColumnFamilyHandle* column_family,
   // Convert user_key into a corresponding internal key.
   InternalKey k1(start.value(), kMaxSequenceNumber, kValueTypeForSeek);
   InternalKey k2(limit.value(), kMaxSequenceNumber, kValueTypeForSeek);
-  ReadOnlyMemTable::MemTableStats memStats =
+  MemTable::MemTableStats memStats =
       sv->mem->ApproximateStats(k1.Encode(), k2.Encode());
-  ReadOnlyMemTable::MemTableStats immStats =
+  MemTable::MemTableStats immStats =
       sv->imm->ApproximateStats(k1.Encode(), k2.Encode());
   *count = memStats.count + immStats.count;
   *size = memStats.size + immStats.size;
@@ -5872,6 +5829,7 @@ Status DBImpl::IngestExternalFile(
 Status DBImpl::IngestExternalFiles(
     const std::vector<IngestExternalFileArg>& args) {
   // TODO: plumb Env::IOActivity, Env::IOPriority
+  const ReadOptions read_options;
   const WriteOptions write_options;
 
   if (args.empty()) {
@@ -5896,10 +5854,6 @@ Status DBImpl::IngestExternalFiles(
       char err_msg[128] = {0};
       snprintf(err_msg, 128, "external_files[%zu] is empty", i);
       return Status::InvalidArgument(err_msg);
-    }
-    if (i && args[i].options.fill_cache != args[i - 1].options.fill_cache) {
-      return Status::InvalidArgument(
-          "fill_cache should be the same across ingestion options.");
     }
   }
   for (const auto& arg : args) {
@@ -5960,9 +5914,9 @@ Status DBImpl::IngestExternalFiles(
   uint64_t start_file_number = next_file_number;
   for (size_t i = 1; i != num_cfs; ++i) {
     start_file_number += args[i - 1].external_files.size();
-    SuperVersion* super_version =
-        ingestion_jobs[i].GetColumnFamilyData()->GetReferencedSuperVersion(
-            this);
+    auto* cfd =
+        static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)->cfd();
+    SuperVersion* super_version = cfd->GetReferencedSuperVersion(this);
     Status es = ingestion_jobs[i].Prepare(
         args[i].external_files, args[i].files_checksums,
         args[i].files_checksum_func_names, args[i].file_temperature,
@@ -5976,9 +5930,9 @@ Status DBImpl::IngestExternalFiles(
   TEST_SYNC_POINT("DBImpl::IngestExternalFiles:BeforeLastJobPrepare:0");
   TEST_SYNC_POINT("DBImpl::IngestExternalFiles:BeforeLastJobPrepare:1");
   {
-    SuperVersion* super_version =
-        ingestion_jobs[0].GetColumnFamilyData()->GetReferencedSuperVersion(
-            this);
+    auto* cfd =
+        static_cast<ColumnFamilyHandleImpl*>(args[0].column_family)->cfd();
+    SuperVersion* super_version = cfd->GetReferencedSuperVersion(this);
     Status es = ingestion_jobs[0].Prepare(
         args[0].external_files, args[0].files_checksums,
         args[0].files_checksum_func_names, args[0].file_temperature,
@@ -6029,7 +5983,8 @@ Status DBImpl::IngestExternalFiles(
     bool at_least_one_cf_need_flush = false;
     std::vector<bool> need_flush(num_cfs, false);
     for (size_t i = 0; i != num_cfs; ++i) {
-      auto* cfd = ingestion_jobs[i].GetColumnFamilyData();
+      auto* cfd =
+          static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)->cfd();
       if (cfd->IsDropped()) {
         // TODO (yanqin) investigate whether we should abort ingestion or
         // proceed with other non-dropped column families.
@@ -6061,21 +6016,16 @@ Status DBImpl::IngestExternalFiles(
         for (size_t i = 0; i != num_cfs; ++i) {
           if (need_flush[i]) {
             mutex_.Unlock();
-            status =
-                FlushMemTable(ingestion_jobs[i].GetColumnFamilyData(),
-                              flush_opts, FlushReason::kExternalFileIngestion,
-                              true /* entered_write_thread */);
+            auto* cfd =
+                static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)
+                    ->cfd();
+            status = FlushMemTable(cfd, flush_opts,
+                                   FlushReason::kExternalFileIngestion,
+                                   true /* entered_write_thread */);
             mutex_.Lock();
             if (!status.ok()) {
               break;
             }
-          }
-        }
-      }
-      if (status.ok()) {
-        for (size_t i = 0; i != num_cfs; ++i) {
-          if (immutable_db_options_.atomic_flush || need_flush[i]) {
-            ingestion_jobs[i].SetFlushedBeforeRun();
           }
         }
       }
@@ -6092,15 +6042,16 @@ Status DBImpl::IngestExternalFiles(
       }
     }
     if (status.ok()) {
-      ReadOptions read_options;
-      read_options.fill_cache = args[0].options.fill_cache;
       autovector<ColumnFamilyData*> cfds_to_commit;
       autovector<const MutableCFOptions*> mutable_cf_options_list;
       autovector<autovector<VersionEdit*>> edit_lists;
       uint32_t num_entries = 0;
       for (size_t i = 0; i != num_cfs; ++i) {
-        auto* cfd = ingestion_jobs[i].GetColumnFamilyData();
-        assert(!cfd->IsDropped());
+        auto* cfd =
+            static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)->cfd();
+        if (cfd->IsDropped()) {
+          continue;
+        }
         cfds_to_commit.push_back(cfd);
         mutable_cf_options_list.push_back(cfd->GetLatestMutableCFOptions());
         autovector<VersionEdit*> edit_list;
@@ -6150,16 +6101,20 @@ Status DBImpl::IngestExternalFiles(
 
     if (status.ok()) {
       for (size_t i = 0; i != num_cfs; ++i) {
-        auto* cfd = ingestion_jobs[i].GetColumnFamilyData();
-        assert(!cfd->IsDropped());
-        InstallSuperVersionAndScheduleWork(cfd, &sv_ctxs[i],
-                                           *cfd->GetLatestMutableCFOptions());
+        auto* cfd =
+            static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)->cfd();
+        if (!cfd->IsDropped()) {
+          InstallSuperVersionAndScheduleWork(cfd, &sv_ctxs[i],
+                                             *cfd->GetLatestMutableCFOptions());
 #ifndef NDEBUG
-        if (0 == i && num_cfs > 1) {
-          TEST_SYNC_POINT("DBImpl::IngestExternalFiles:InstallSVForFirstCF:0");
-          TEST_SYNC_POINT("DBImpl::IngestExternalFiles:InstallSVForFirstCF:1");
-        }
+          if (0 == i && num_cfs > 1) {
+            TEST_SYNC_POINT(
+                "DBImpl::IngestExternalFiles:InstallSVForFirstCF:0");
+            TEST_SYNC_POINT(
+                "DBImpl::IngestExternalFiles:InstallSVForFirstCF:1");
+          }
 #endif  // !NDEBUG
+        }
       }
     } else if (versions_->io_status().IsIOError()) {
       // Error while writing to MANIFEST.
@@ -6201,7 +6156,8 @@ Status DBImpl::IngestExternalFiles(
   }
   if (status.ok()) {
     for (size_t i = 0; i != num_cfs; ++i) {
-      auto* cfd = ingestion_jobs[i].GetColumnFamilyData();
+      auto* cfd =
+          static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)->cfd();
       if (!cfd->IsDropped()) {
         NotifyOnExternalFileIngested(cfd, ingestion_jobs[i]);
       }

@@ -91,7 +91,7 @@ class FlushJob {
              bool* skipped_since_bg_error = nullptr,
              ErrorHandler* error_handler = nullptr);
   void Cancel();
-  const autovector<ReadOnlyMemTable*>& GetMemTables() const { return mems_; }
+  const autovector<MemTable*>& GetMemTables() const { return mems_; }
 
   std::list<std::unique_ptr<FlushJobInfo>>* GetCommittedFlushJobsInfo() {
     return &committed_flush_jobs_info_;
@@ -101,7 +101,7 @@ class FlushJob {
   friend class FlushJobTest_GetRateLimiterPriorityForWrite_Test;
 
   void ReportStartedFlush();
-  static void ReportFlushInputSize(const autovector<ReadOnlyMemTable*>& mems);
+  void ReportFlushInputSize(const autovector<MemTable*>& mems);
   void RecordFlushIOStats();
   Status WriteLevel0Table();
 
@@ -205,8 +205,7 @@ class FlushJob {
 
   // Variables below are set by PickMemTable():
   FileMetaData meta_;
-  // Memtables to be flushed by this job.
-  autovector<ReadOnlyMemTable*> mems_;
+  autovector<MemTable*> mems_;
   VersionEdit* edit_;
   Version* base_;
   bool pick_memtable_called;

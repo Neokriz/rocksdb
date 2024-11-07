@@ -1182,9 +1182,6 @@ class VersionSetTestBase {
     immutable_options_.fs = fs_;
     immutable_options_.clock = env_->GetSystemClock().get();
 
-    cf_options_.table_factory = table_factory_;
-    mutable_cf_options_.table_factory = table_factory_;
-
     versions_.reset(new VersionSet(
         dbname_, &db_options_, env_options_, table_cache_.get(),
         &write_buffer_manager_, &write_controller_,
@@ -1328,7 +1325,7 @@ class VersionSetTestBase {
               &internal_tbl_prop_coll_factories, kNoCompression,
               CompressionOptions(),
               TablePropertiesCollectorFactory::Context::kUnknownColumnFamily,
-              info.column_family, info.level, kUnknownNewestKeyTime),
+              info.column_family, info.level),
           fwriter.get()));
       InternalKey ikey(info.key, 0, ValueType::kTypeValue);
       builder->Add(ikey.Encode(), "value");

@@ -466,7 +466,7 @@ void SuperVersion::Cleanup() {
   // decrement reference to the immutable MemtableList
   // this SV object was pointing to.
   imm->Unref(&to_delete);
-  ReadOnlyMemTable* m = mem->Unref();
+  MemTable* m = mem->Unref();
   if (m != nullptr) {
     auto* memory_usage = current->cfd()->imm()->current_memory_usage();
     assert(*memory_usage >= m->ApproximateMemoryUsage());
@@ -595,8 +595,8 @@ ColumnFamilyData::ColumnFamilyData(
     blob_file_cache_.reset(
         new BlobFileCache(_table_cache, ioptions(), soptions(), id_,
                           internal_stats_->GetBlobFileReadHist(), io_tracer));
-    blob_source_.reset(new BlobSource(ioptions_, mutable_cf_options_, db_id,
-                                      db_session_id, blob_file_cache_.get()));
+    blob_source_.reset(new BlobSource(ioptions(), db_id, db_session_id,
+                                      blob_file_cache_.get()));
 
     if (ioptions_.compaction_style == kCompactionStyleLevel) {
       compaction_picker_.reset(
@@ -693,9 +693,9 @@ ColumnFamilyData::~ColumnFamilyData() {
   if (mem_ != nullptr) {
     delete mem_->Unref();
   }
-  autovector<ReadOnlyMemTable*> to_delete;
+  autovector<MemTable*> to_delete;
   imm_.current()->Unref(&to_delete);
-  for (auto* m : to_delete) {
+  for (MemTable* m : to_delete) {
     delete m;
   }
 
@@ -901,11 +901,7 @@ uint64_t GetPendingCompactionBytesForCompactionSpeedup(
     return slowdown_threshold;
   }
 
-  // Prevent a small CF from triggering parallel compactions for other CFs.
-  // Require compaction debt to be more than a full L0 to Lbase compaction.
-  const uint64_t kMinDebtSize = 2 * mutable_cf_options.max_bytes_for_level_base;
-  uint64_t size_threshold =
-      std::max(bottommost_files_size / kBottommostSizeDivisor, kMinDebtSize);
+  uint64_t size_threshold = bottommost_files_size / kBottommostSizeDivisor;
   return std::min(size_threshold, slowdown_threshold);
 }
 
@@ -1176,12 +1172,10 @@ bool ColumnFamilyData::NeedsCompaction() const {
 
 Compaction* ColumnFamilyData::PickCompaction(
     const MutableCFOptions& mutable_options,
-    const MutableDBOptions& mutable_db_options,
-    const std::vector<SequenceNumber>& existing_snapshots,
-    const SnapshotChecker* snapshot_checker, LogBuffer* log_buffer) {
+    const MutableDBOptions& mutable_db_options, LogBuffer* log_buffer) {
   auto* result = compaction_picker_->PickCompaction(
-      GetName(), mutable_options, mutable_db_options, existing_snapshots,
-      snapshot_checker, current_->storage_info(), log_buffer);
+      GetName(), mutable_options, mutable_db_options, current_->storage_info(),
+      log_buffer);
   if (result != nullptr) {
     result->FinalizeInputInfo(current_);
   }

@@ -17,8 +17,10 @@ namespace ROCKSDB_NAMESPACE {
 DEFINE_SYNC_AND_ASYNC(Status, TableCache::MultiGet)
 (const ReadOptions& options, const InternalKeyComparator& internal_comparator,
  const FileMetaData& file_meta, const MultiGetContext::Range* mget_range,
- const MutableCFOptions& mutable_cf_options, HistogramImpl* file_read_hist,
- bool skip_filters, bool skip_range_deletions, int level, TypedHandle* handle) {
+ uint8_t block_protection_bytes_per_key,
+ const std::shared_ptr<const SliceTransform>& prefix_extractor,
+ HistogramImpl* file_read_hist, bool skip_filters, bool skip_range_deletions,
+ int level, TypedHandle* handle) {
   auto& fd = file_meta.fd;
   Status s;
   TableReader* t = fd.table_reader;
@@ -70,7 +72,7 @@ DEFINE_SYNC_AND_ASYNC(Status, TableCache::MultiGet)
     if (t == nullptr) {
       assert(handle == nullptr);
       s = FindTable(options, file_options_, internal_comparator, file_meta,
-                    &handle, mutable_cf_options,
+                    &handle, block_protection_bytes_per_key, prefix_extractor,
                     options.read_tier == kBlockCacheTier /* no_io */,
                     file_read_hist, skip_filters, level,
                     true /* prefetch_index_and_filter_in_cache */,
@@ -86,8 +88,7 @@ DEFINE_SYNC_AND_ASYNC(Status, TableCache::MultiGet)
     }
     if (s.ok()) {
       CO_AWAIT(t->MultiGet)
-      (options, &table_range, mutable_cf_options.prefix_extractor.get(),
-       skip_filters);
+      (options, &table_range, prefix_extractor.get(), skip_filters);
     } else if (options.read_tier == kBlockCacheTier && s.IsIncomplete()) {
       for (auto iter = table_range.begin(); iter != table_range.end(); ++iter) {
         Status* status = iter->s;

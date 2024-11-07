@@ -35,17 +35,6 @@ void BlockBasedTableIterator::SeekSecondPass(const Slice* target) {
 
 void BlockBasedTableIterator::SeekImpl(const Slice* target,
                                        bool async_prefetch) {
-  // TODO(hx235): set `seek_key_prefix_for_readahead_trimming_`
-  // even when `target == nullptr` that is when `SeekToFirst()` is called
-  if (target != nullptr && prefix_extractor_ &&
-      read_options_.prefix_same_as_start) {
-    const Slice& seek_user_key = ExtractUserKey(*target);
-    seek_key_prefix_for_readahead_trimming_ =
-        prefix_extractor_->InDomain(seek_user_key)
-            ? prefix_extractor_->Transform(seek_user_key).ToString()
-            : "";
-  }
-
   bool is_first_pass = !async_read_in_progress_;
 
   if (!is_first_pass) {
@@ -55,9 +44,9 @@ void BlockBasedTableIterator::SeekImpl(const Slice* target,
 
   ResetBlockCacheLookupVar();
 
-  bool autotune_readaheadsize =
-      is_first_pass && read_options_.auto_readahead_size &&
-      (read_options_.iterate_upper_bound || read_options_.prefix_same_as_start);
+  bool autotune_readaheadsize = is_first_pass &&
+                                read_options_.auto_readahead_size &&
+                                read_options_.iterate_upper_bound;
 
   if (autotune_readaheadsize &&
       table_->get_rep()->table_options.block_cache.get() &&
@@ -789,7 +778,7 @@ void BlockBasedTableIterator::BlockCacheLookupForReadAheadSize(
 
   size_t footer = table_->get_rep()->footer.GetBlockTrailerSize();
   if (read_curr_block && !DoesContainBlockHandles() &&
-      IsNextBlockOutOfReadaheadBound()) {
+      IsNextBlockOutOfBound()) {
     end_offset = index_iter_->value().handle.offset() + footer +
                  index_iter_->value().handle.size();
     return;
@@ -861,7 +850,7 @@ void BlockBasedTableIterator::BlockCacheLookupForReadAheadSize(
     // If curr block's index key >= iterate_upper_bound, it
     // means all the keys in next block or above are out of
     // bound.
-    if (IsNextBlockOutOfReadaheadBound()) {
+    if (IsNextBlockOutOfBound()) {
       is_index_out_of_bound_ = true;
       break;
     }

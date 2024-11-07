@@ -386,7 +386,7 @@ struct CompactionServiceInput {
   // files needed for this compaction, for both input level files and output
   // level files.
   std::vector<std::string> input_files;
-  int output_level = 0;
+  int output_level;
 
   // db_id is used to generate unique id of sst on the remote compactor
   std::string db_id;
@@ -397,7 +397,7 @@ struct CompactionServiceInput {
   bool has_end = false;
   std::string end;
 
-  uint64_t options_file_number = 0;
+  uint64_t options_file_number;
 
   // serialization interface to read and write the object
   static Status Read(const std::string& data_str, CompactionServiceInput* obj);
@@ -424,7 +424,6 @@ struct CompactionServiceOutputFile {
   uint64_t paranoid_hash;
   bool marked_for_compaction;
   UniqueId64x2 unique_id{};
-  TableProperties table_properties;
 
   CompactionServiceOutputFile() = default;
   CompactionServiceOutputFile(
@@ -433,8 +432,7 @@ struct CompactionServiceOutputFile {
       uint64_t _oldest_ancester_time, uint64_t _file_creation_time,
       uint64_t _epoch_number, const std::string& _file_checksum,
       const std::string& _file_checksum_func_name, uint64_t _paranoid_hash,
-      bool _marked_for_compaction, UniqueId64x2 _unique_id,
-      const TableProperties& _table_properties)
+      bool _marked_for_compaction, UniqueId64x2 _unique_id)
       : file_name(name),
         smallest_seqno(smallest),
         largest_seqno(largest),
@@ -447,8 +445,7 @@ struct CompactionServiceOutputFile {
         file_checksum_func_name(_file_checksum_func_name),
         paranoid_hash(_paranoid_hash),
         marked_for_compaction(_marked_for_compaction),
-        unique_id(std::move(_unique_id)),
-        table_properties(_table_properties) {}
+        unique_id(std::move(_unique_id)) {}
 };
 
 // CompactionServiceResult contains the compaction result from a different db
@@ -457,7 +454,7 @@ struct CompactionServiceOutputFile {
 struct CompactionServiceResult {
   Status status;
   std::vector<CompactionServiceOutputFile> output_files;
-  int output_level = 0;
+  int output_level;
 
   // location of the output files
   std::string output_path;

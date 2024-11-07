@@ -79,14 +79,10 @@ Compaction* FIFOCompactionPicker::PickTTLCompaction(
       FileMetaData* f = *ritr;
       assert(f);
       if (f->fd.table_reader && f->fd.table_reader->GetTableProperties()) {
-        uint64_t newest_key_time = f->TryGetNewestKeyTime();
         uint64_t creation_time =
             f->fd.table_reader->GetTableProperties()->creation_time;
-        uint64_t est_newest_key_time = newest_key_time == kUnknownNewestKeyTime
-                                           ? creation_time
-                                           : newest_key_time;
-        if (est_newest_key_time == kUnknownNewestKeyTime ||
-            est_newest_key_time >= (current_time - mutable_cf_options.ttl)) {
+        if (creation_time == 0 ||
+            creation_time >= (current_time - mutable_cf_options.ttl)) {
           break;
         }
       }
@@ -106,19 +102,15 @@ Compaction* FIFOCompactionPicker::PickTTLCompaction(
   }
 
   for (const auto& f : inputs[0].files) {
-    assert(f);
-    uint64_t newest_key_time = f->TryGetNewestKeyTime();
     uint64_t creation_time = 0;
+    assert(f);
     if (f->fd.table_reader && f->fd.table_reader->GetTableProperties()) {
       creation_time = f->fd.table_reader->GetTableProperties()->creation_time;
     }
-    uint64_t est_newest_key_time = newest_key_time == kUnknownNewestKeyTime
-                                       ? creation_time
-                                       : newest_key_time;
     ROCKS_LOG_BUFFER(log_buffer,
                      "[%s] FIFO compaction: picking file %" PRIu64
-                     " with estimated newest key time %" PRIu64 " for deletion",
-                     cf_name.c_str(), f->fd.GetNumber(), est_newest_key_time);
+                     " with creation time %" PRIu64 " for deletion",
+                     cf_name.c_str(), f->fd.GetNumber(), creation_time);
   }
 
   Compaction* c = new Compaction(
@@ -126,9 +118,7 @@ Compaction* FIFOCompactionPicker::PickTTLCompaction(
       std::move(inputs), 0, 0, 0, 0, kNoCompression,
       mutable_cf_options.compression_opts,
       mutable_cf_options.default_write_temperature,
-      /* max_subcompactions */ 0, {}, /* earliest_snapshot */ std::nullopt,
-      /* snapshot_checker */ nullptr,
-      /* is manual */ false,
+      /* max_subcompactions */ 0, {}, /* is manual */ false,
       /* trim_ts */ "", vstorage->CompactionScore(0),
       /* is deletion compaction */ true, /* l0_files_might_overlap */ true,
       CompactionReason::kFIFOTtl);
@@ -198,9 +188,7 @@ Compaction* FIFOCompactionPicker::PickSizeCompaction(
             0 /* output path ID */, mutable_cf_options.compression,
             mutable_cf_options.compression_opts,
             mutable_cf_options.default_write_temperature,
-            0 /* max_subcompactions */, {},
-            /* earliest_snapshot */ std::nullopt,
-            /* snapshot_checker */ nullptr, /* is manual */ false,
+            0 /* max_subcompactions */, {}, /* is manual */ false,
             /* trim_ts */ "", vstorage->CompactionScore(0),
             /* is deletion compaction */ false,
             /* l0_files_might_overlap */ true,
@@ -296,9 +284,7 @@ Compaction* FIFOCompactionPicker::PickSizeCompaction(
       /* output_path_id */ 0, kNoCompression,
       mutable_cf_options.compression_opts,
       mutable_cf_options.default_write_temperature,
-      /* max_subcompactions */ 0, {}, /* earliest_snapshot */ std::nullopt,
-      /* snapshot_checker */ nullptr,
-      /* is manual */ false,
+      /* max_subcompactions */ 0, {}, /* is manual */ false,
       /* trim_ts */ "", vstorage->CompactionScore(0),
       /* is deletion compaction */ true,
       /* l0_files_might_overlap */ true, CompactionReason::kFIFOMaxSize);
@@ -358,29 +344,38 @@ Compaction* FIFOCompactionPicker::PickTemperatureChangeCompaction(
   Temperature compaction_target_temp = Temperature::kLastTemperature;
   if (current_time > min_age) {
     uint64_t create_time_threshold = current_time - min_age;
+    // We will ideally identify a file qualifying for temperature change by
+    // knowing the timestamp for the youngest entry in the file. However, right
+    // now we don't have the information. We infer it by looking at timestamp of
+    // the previous file's (which is just younger) oldest entry's timestamp.
+    // avoid index underflow
     assert(level_files.size() >= 1);
-    for (size_t index = level_files.size(); index >= 1; --index) {
+    for (size_t index = level_files.size() - 1; index >= 1; --index) {
       // Try to add cur_file to compaction inputs.
-      FileMetaData* cur_file = level_files[index - 1];
-      FileMetaData* prev_file = index < 2 ? nullptr : level_files[index - 2];
+      FileMetaData* cur_file = level_files[index];
+      // prev_file is just younger than cur_file
+      FileMetaData* prev_file = level_files[index - 1];
       if (cur_file->being_compacted) {
         // Should not happen since we check for
         // `level0_compactions_in_progress_` above. Here we simply just don't
         // schedule anything.
         return nullptr;
       }
-      uint64_t est_newest_key_time = cur_file->TryGetNewestKeyTime(prev_file);
-      // Newer file could have newest_key_time populated
-      if (est_newest_key_time == kUnknownNewestKeyTime) {
-        continue;
+      uint64_t oldest_ancestor_time = prev_file->TryGetOldestAncesterTime();
+      if (oldest_ancestor_time == kUnknownOldestAncesterTime) {
+        // Older files might not have enough information. It is possible to
+        // handle these files by looking at newer files, but maintaining the
+        // logic isn't worth it.
+        break;
       }
-      if (est_newest_key_time > create_time_threshold) {
+      if (oldest_ancestor_time > create_time_threshold) {
+        // cur_file is too fresh
         break;
       }
       Temperature cur_target_temp = ages[0].temperature;
       for (size_t i = 1; i < ages.size(); ++i) {
         if (current_time >= ages[i].age &&
-            est_newest_key_time <= current_time - ages[i].age) {
+            oldest_ancestor_time <= current_time - ages[i].age) {
           cur_target_temp = ages[i].temperature;
         }
       }
@@ -395,8 +390,8 @@ Compaction* FIFOCompactionPicker::PickTemperatureChangeCompaction(
       ROCKS_LOG_BUFFER(
           log_buffer,
           "[%s] FIFO compaction: picking file %" PRIu64
-          " with estimated newest key time %" PRIu64 " for temperature %s.",
-          cf_name.c_str(), cur_file->fd.GetNumber(), est_newest_key_time,
+          " with next file's oldest time %" PRIu64 " for temperature %s.",
+          cf_name.c_str(), cur_file->fd.GetNumber(), oldest_ancestor_time,
           temperature_to_string[cur_target_temp].c_str());
       break;
     }
@@ -415,9 +410,8 @@ Compaction* FIFOCompactionPicker::PickTemperatureChangeCompaction(
       0 /* max compaction bytes, not applicable */, 0 /* output path ID */,
       mutable_cf_options.compression, mutable_cf_options.compression_opts,
       compaction_target_temp,
-      /* max_subcompactions */ 0, {}, /* earliest_snapshot */ std::nullopt,
-      /* snapshot_checker */ nullptr,
-      /* is manual */ false, /* trim_ts */ "", vstorage->CompactionScore(0),
+      /* max_subcompactions */ 0, {}, /* is manual */ false, /* trim_ts */ "",
+      vstorage->CompactionScore(0),
       /* is deletion compaction */ false, /* l0_files_might_overlap */ true,
       CompactionReason::kChangeTemperature);
   return c;
@@ -425,9 +419,7 @@ Compaction* FIFOCompactionPicker::PickTemperatureChangeCompaction(
 
 Compaction* FIFOCompactionPicker::PickCompaction(
     const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
-    const MutableDBOptions& mutable_db_options,
-    const std::vector<SequenceNumber>& /* existing_snapshots */,
-    const SnapshotChecker* /* snapshot_checker */, VersionStorageInfo* vstorage,
+    const MutableDBOptions& mutable_db_options, VersionStorageInfo* vstorage,
     LogBuffer* log_buffer) {
   Compaction* c = nullptr;
   if (mutable_cf_options.ttl > 0) {
@@ -462,10 +454,8 @@ Compaction* FIFOCompactionPicker::CompactRange(
   assert(output_level == 0);
   *compaction_end = nullptr;
   LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, ioptions_.logger);
-  Compaction* c =
-      PickCompaction(cf_name, mutable_cf_options, mutable_db_options,
-                     /*existing_snapshots*/ {}, /*snapshot_checker*/ nullptr,
-                     vstorage, &log_buffer);
+  Compaction* c = PickCompaction(cf_name, mutable_cf_options,
+                                 mutable_db_options, vstorage, &log_buffer);
   log_buffer.FlushBufferToLog();
   return c;
 }

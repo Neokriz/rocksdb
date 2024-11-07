@@ -835,10 +835,6 @@ DEFINE_bool(use_get_entity, false, "If set, use the GetEntity API for reads");
 DEFINE_bool(use_multi_get_entity, false,
             "If set, use the MultiGetEntity API for reads");
 
-DEFINE_int32(test_ingest_standalone_range_deletion_one_in, 0,
-             "If non-zero, file ingestion flow will test standalone range "
-             "deletion file once every N file ingestion operations.");
-
 static bool ValidateInt32Percent(const char* flagname, int32_t value) {
   if (value < 0 || value > 100) {
     fprintf(stderr, "Invalid value for --%s: %d, 0<= pct <=100 \n", flagname,
@@ -1035,9 +1031,8 @@ DEFINE_int32(continuous_verification_interval, 1000,
              "disables continuous verification.");
 
 DEFINE_int32(approximate_size_one_in, 64,
-             "If non-zero, DB::GetApproximateSizes() and "
-             "DB::GetApproximateMemTableStats() will be called against "
-             "random key ranges.");
+             "If non-zero, DB::GetApproximateSizes() will be called against"
+             " random key ranges.");
 
 DEFINE_int32(read_fault_one_in, 1000,
              "On non-zero, enables fault injection on read");

@@ -25,6 +25,7 @@
 #
 # The solution is to move the include out of the #ifdef.
 
+from __future__ import print_function
 
 import argparse
 import re
@@ -61,7 +62,7 @@ def expand_include(
 
     included.add(include_path)
     with open(include_path) as f:
-        print(f'#line 1 "{include_path}"', file=source_out)
+        print('#line 1 "{}"'.format(include_path), file=source_out)
         process_file(
             f, include_path, source_out, header_out, include_paths, public_include_paths
         )
@@ -117,7 +118,7 @@ def process_file(
                     )
 
             if expanded:
-                print(f'#line {line + 1} "{abs_path}"', file=source_out)
+                print('#line {} "{}"'.format(line + 1, abs_path), file=source_out)
         elif text != "#pragma once\n":
             source_out.write(text)
 
@@ -156,8 +157,8 @@ def main():
     with open(filename) as f, open(args.source_out, "w") as source_out, open(
         args.header_out, "w"
     ) as header_out:
-        print(f'#line 1 "{filename}"', file=source_out)
-        print(f'#include "{header_out.name}"', file=source_out)
+        print('#line 1 "{}"'.format(filename), file=source_out)
+        print('#include "{}"'.format(header_out.name), file=source_out)
         process_file(
             f, abs_path, source_out, header_out, include_paths, public_include_paths
         )

@@ -105,7 +105,6 @@ class Repairer {
             SanitizeOptions(immutable_db_options_, default_cf_opts)),
         default_iopts_(
             ImmutableOptions(immutable_db_options_, default_cf_opts_)),
-        default_mopts_(MutableCFOptions(default_cf_opts_)),
         unknown_cf_opts_(
             SanitizeOptions(immutable_db_options_, unknown_cf_opts)),
         create_unknown_cfs_(create_unknown_cfs),
@@ -262,7 +261,6 @@ class Repairer {
   const InternalKeyComparator icmp_;
   const ColumnFamilyOptions default_cf_opts_;
   const ImmutableOptions default_iopts_;  // table_cache_ holds reference
-  const MutableCFOptions default_mopts_;
   const ColumnFamilyOptions unknown_cf_opts_;
   const bool create_unknown_cfs_;
   std::shared_ptr<Cache> raw_table_cache_;
@@ -413,12 +411,9 @@ class Repairer {
       if (record_status.ok()) {
         const UnorderedMap<uint32_t, size_t>& record_ts_sz =
             reader.GetRecordedTimestampSize();
-        // Use same value for `seq_per_batch` and `batch_per_txn` as
-        // WriteBatchInternal::InsertInto does below.
         record_status = HandleWriteBatchTimestampSizeDifference(
             &batch, running_ts_sz, record_ts_sz,
-            TimestampSizeConsistencyMode::kVerifyConsistency,
-            /* seq_per_batch */ false, /* batch_per_txn */ true);
+            TimestampSizeConsistencyMode::kVerifyConsistency);
         if (record_status.ok()) {
           record_status =
               WriteBatchInternal::InsertInto(&batch, cf_mems, nullptr, nullptr);
@@ -477,10 +472,10 @@ class Repairer {
           write_option, cfd->internal_comparator(),
           cfd->internal_tbl_prop_coll_factories(), kNoCompression,
           default_compression, cfd->GetID(), cfd->GetName(), -1 /* level */,
-          current_time /* newest_key_time */, false /* is_bottommost */,
-          TableFileCreationReason::kRecovery, 0 /* oldest_key_time */,
-          0 /* file_creation_time */, "DB Repairer" /* db_id */, db_session_id_,
-          0 /*target_file_size*/, meta.fd.GetNumber());
+          false /* is_bottommost */, TableFileCreationReason::kRecovery,
+          0 /* oldest_key_time */, 0 /* file_creation_time */,
+          "DB Repairer" /* db_id */, db_session_id_, 0 /*target_file_size*/,
+          meta.fd.GetNumber());
 
       SeqnoToTimeMapping empty_seqno_to_time_mapping;
       status = BuildTable(
@@ -542,7 +537,8 @@ class Repairer {
       // TODO: plumb Env::IOActivity, Env::IOPriority
       const ReadOptions read_options;
       status = table_cache_->GetTableProperties(
-          file_options_, read_options, icmp_, t->meta, &props, default_mopts_);
+          file_options_, read_options, icmp_, t->meta, &props,
+          0 /* block_protection_bytes_per_key */);
     }
     if (status.ok()) {
       auto s =
@@ -606,13 +602,15 @@ class Repairer {
       ropts.total_order_seek = true;
       InternalIterator* iter = table_cache_->NewIterator(
           ropts, file_options_, cfd->internal_comparator(), t->meta,
-          nullptr /* range_del_agg */, *cfd->GetLatestMutableCFOptions(),
+          nullptr /* range_del_agg */,
+          cfd->GetLatestMutableCFOptions()->prefix_extractor,
           /*table_reader_ptr=*/nullptr, /*file_read_hist=*/nullptr,
           TableReaderCaller::kRepair, /*arena=*/nullptr, /*skip_filters=*/false,
           /*level=*/-1, /*max_file_size_for_l0_meta_pin=*/0,
           /*smallest_compaction_key=*/nullptr,
           /*largest_compaction_key=*/nullptr,
-          /*allow_unprepared_value=*/false);
+          /*allow_unprepared_value=*/false,
+          cfd->GetLatestMutableCFOptions()->block_protection_bytes_per_key);
       ParsedInternalKey parsed;
       for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
         Slice key = iter->key();
@@ -653,7 +651,8 @@ class Repairer {
       std::unique_ptr<FragmentedRangeTombstoneIterator> r_iter;
       status = table_cache_->GetRangeTombstoneIterator(
           ropts, cfd->internal_comparator(), t->meta,
-          *cfd->GetLatestMutableCFOptions(), &r_iter);
+          cfd->GetLatestMutableCFOptions()->block_protection_bytes_per_key,
+          &r_iter);
 
       if (r_iter) {
         r_iter->SeekToFirst();

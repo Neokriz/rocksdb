@@ -540,12 +540,18 @@ class CompactionIterator {
 
 inline bool CompactionIterator::DefinitelyInSnapshot(SequenceNumber seq,
                                                      SequenceNumber snapshot) {
-  return DataIsDefinitelyInSnapshot(seq, snapshot, snapshot_checker_);
+  return ((seq) <= (snapshot) &&
+          (snapshot_checker_ == nullptr ||
+           LIKELY(snapshot_checker_->CheckInSnapshot((seq), (snapshot)) ==
+                  SnapshotCheckerResult::kInSnapshot)));
 }
 
 inline bool CompactionIterator::DefinitelyNotInSnapshot(
     SequenceNumber seq, SequenceNumber snapshot) {
-  return DataIsDefinitelyNotInSnapshot(seq, snapshot, snapshot_checker_);
+  return ((seq) > (snapshot) ||
+          (snapshot_checker_ != nullptr &&
+           UNLIKELY(snapshot_checker_->CheckInSnapshot((seq), (snapshot)) ==
+                    SnapshotCheckerResult::kNotInSnapshot)));
 }
 
 }  // namespace ROCKSDB_NAMESPACE

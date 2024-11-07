@@ -12,6 +12,11 @@
 #include <algorithm>
 #include <mutex>
 
+// yhh::
+#include <iostream>
+#include <chrono>
+#include <fstream>
+
 #include "file/file_util.h"
 #include "monitoring/histogram.h"
 #include "monitoring/iostats_context_imp.h"
@@ -112,6 +117,9 @@ IOStatus RandomAccessFileReader::Read(const IOOptions& opts, uint64_t offset,
 
   TEST_SYNC_POINT_CALLBACK("RandomAccessFileReader::Read", nullptr);
 
+
+  [[maybe_unused]] auto start = std::chrono::high_resolution_clock::now();
+
   // To be paranoid: modify scratch a little bit, so in case underlying
   // FileSystem doesn't fill the buffer but return success and `scratch` returns
   // contains a previous block, returned value will not pass checksum.
@@ -120,15 +128,23 @@ IOStatus RandomAccessFileReader::Read(const IOOptions& opts, uint64_t offset,
     scratch[0]++;
   }
 
+// yhh::
+  //std::cout << "offset :" << offset << "    size : " << n << std::endl;
+
+
   IOStatus io_s;
   uint64_t elapsed = 0;
-  size_t alignment = file_->GetRequiredBufferAlignment();
+  size_t alignment = file_->GetRequiredBufferAlignment(); 
+  // yhh:
+  //std::cout << "alignment :" << alignment << std::endl;
   bool is_aligned = false;
   if (scratch != nullptr) {
     // Check if offset, length and buffer are aligned.
     is_aligned = (offset & (alignment - 1)) == 0 &&
                  (n & (alignment - 1)) == 0 &&
                  (uintptr_t(scratch) & (alignment - 1)) == 0;
+    // yhh:
+    //std::cout << "is_aligned : " << is_aligned << std::endl;
   }
 
   {
@@ -138,12 +154,16 @@ IOStatus RandomAccessFileReader::Read(const IOOptions& opts, uint64_t offset,
                  true /*delay_enabled*/);
     auto prev_perf_level = GetPerfLevel();
     IOSTATS_TIMER_GUARD(read_nanos);
+    // yhh:
+    //std::cout << "use_direct_io() or not : " << use_direct_io() << std::endl;
     if (use_direct_io() && is_aligned == false) {
       size_t aligned_offset =
           TruncateToPageBoundary(alignment, static_cast<size_t>(offset));
       size_t offset_advance = static_cast<size_t>(offset) - aligned_offset;
       size_t read_size =
           Roundup(static_cast<size_t>(offset + n), alignment) - aligned_offset;
+      // yhh:
+      std::cout << "read_size :" << read_size << std::endl;
       AlignedBuffer buf;
       buf.Alignment(alignment);
       buf.AllocateNewBuffer(read_size);
@@ -204,6 +224,8 @@ IOStatus RandomAccessFileReader::Read(const IOOptions& opts, uint64_t offset,
       }
       *result = Slice(scratch, res_len);
     } else {
+        // yhh:
+      //std::cout << "RandomAccessFileReader::Read 1" << std::endl;
       size_t pos = 0;
       const char* res_scratch = nullptr;
       while (pos < n) {
@@ -271,6 +293,22 @@ IOStatus RandomAccessFileReader::Read(const IOOptions& opts, uint64_t offset,
     file_read_hist_->Add(elapsed);
   }
 
+//added byhs loging compaction time
+[[maybe_unused]] auto end = std::chrono::high_resolution_clock::now();
+
+//added byhs loging compaction time
+/*
+std::string log_file_name = "times_read.log";
+std::ofstream log_file(log_file_name, std::ios::app); // 파일 추가 모드로 열기
+if (log_file.is_open()) {
+    //log_file << job_id_ << " " << duration << std::endl;
+    log_file 
+      //<< "time " << end.count() - start.count() 
+      << "time " << std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count() 
+      << " offset " << offset 
+      << " size " << n << std::endl;
+}*/
+
 #ifndef NDEBUG
   auto pair = std::make_pair(&file_name_, &io_s);
   if (offset == 0) {
@@ -281,6 +319,9 @@ IOStatus RandomAccessFileReader::Read(const IOOptions& opts, uint64_t offset,
 #endif
   return io_s;
 }
+
+
+  
 
 size_t End(const FSReadRequest& r) {
   return static_cast<size_t>(r.offset) + r.len;

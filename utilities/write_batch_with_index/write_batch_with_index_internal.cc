@@ -22,13 +22,10 @@ namespace ROCKSDB_NAMESPACE {
 BaseDeltaIterator::BaseDeltaIterator(ColumnFamilyHandle* column_family,
                                      Iterator* base_iterator,
                                      WBWIIteratorImpl* delta_iterator,
-                                     const Comparator* comparator,
-                                     const ReadOptions* read_options)
+                                     const Comparator* comparator)
     : forward_(true),
       current_at_base_(true),
       equal_keys_(false),
-      allow_unprepared_value_(
-          read_options ? read_options->allow_unprepared_value : false),
       status_(Status::OK()),
       column_family_(column_family),
       base_iterator_(base_iterator),
@@ -265,17 +262,6 @@ void BaseDeltaIterator::SetValueAndColumnsFromBase() {
   assert(value_.empty());
   assert(columns_.empty());
 
-  if (!base_iterator_->PrepareValue()) {
-    assert(!BaseValid());
-    assert(!base_iterator_->status().ok());
-
-    Invalidate(base_iterator_->status());
-
-    assert(!Valid());
-    assert(!status().ok());
-    return;
-  }
-
   value_ = base_iterator_->value();
   columns_ = base_iterator_->columns();
 }
@@ -328,17 +314,6 @@ void BaseDeltaIterator::SetValueAndColumnsFromDelta() {
         /* result_operand */ nullptr, &result_type);
   } else if (delta_entry.type == kMergeRecord) {
     if (equal_keys_) {
-      if (!base_iterator_->PrepareValue()) {
-        assert(!BaseValid());
-        assert(!base_iterator_->status().ok());
-
-        Invalidate(base_iterator_->status());
-
-        assert(!Valid());
-        assert(!status().ok());
-        return;
-      }
-
       if (WideColumnsHelper::HasDefaultColumnOnly(base_iterator_->columns())) {
         status_ = WriteBatchWithIndexInternal::MergeKeyWithBaseValue(
             column_family_, delta_entry.key, MergeHelper::kPlainBaseValue,
@@ -427,9 +402,7 @@ void BaseDeltaIterator::UpdateCurrent() {
     } else if (!DeltaValid()) {
       // Delta has finished.
       current_at_base_ = true;
-      if (!allow_unprepared_value_) {
-        SetValueAndColumnsFromBase();
-      }
+      SetValueAndColumnsFromBase();
       return;
     } else {
       int compare =
@@ -453,9 +426,7 @@ void BaseDeltaIterator::UpdateCurrent() {
         }
       } else {
         current_at_base_ = true;
-        if (!allow_unprepared_value_) {
-          SetValueAndColumnsFromBase();
-        }
+        SetValueAndColumnsFromBase();
         return;
       }
     }

@@ -6,6 +6,10 @@ foreach(src ${CORE_TOOLS})
   add_executable(${exename}${ARTIFACT_SUFFIX}
     ${src})
   target_link_libraries(${exename}${ARTIFACT_SUFFIX} ${ROCKSDB_LIB})
+  
+  add_executable(custom_compaction tools/custom_compaction.cpp)
+  target_link_libraries(custom_compaction rocksdb)
+
   list(APPEND core_tool_deps ${exename})
 endforeach()
 

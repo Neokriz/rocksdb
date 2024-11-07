@@ -68,7 +68,6 @@ struct TablePropertiesNames {
   static const std::string kCompressionOptions;
   static const std::string kCreationTime;
   static const std::string kOldestKeyTime;
-  static const std::string kNewestKeyTime;
   static const std::string kFileCreationTime;
   static const std::string kSlowCompressionEstimatedDataSize;
   static const std::string kFastCompressionEstimatedDataSize;
@@ -271,8 +270,6 @@ struct TableProperties {
 
   // Timestamp of the earliest key. 0 means unknown.
   uint64_t oldest_key_time = 0;
-  // Timestamp of the newest key. 0 means unknown.
-  uint64_t newest_key_time = 0;
   // Actual SST file creation time. 0 means unknown.
   uint64_t file_creation_time = 0;
   // Estimated size of data blocks if compressed using a relatively slower
@@ -374,14 +371,6 @@ struct TableProperties {
   // Return the approximated memory usage of this TableProperties object,
   // including memory used by the string properties and UserCollectedProperties
   std::size_t ApproximateMemoryUsage() const;
-
-  // Serialize and deserialize Table Properties
-  Status Serialize(const ConfigOptions& opts, std::string* output) const;
-  static Status Parse(const ConfigOptions& opts, const std::string& serialized,
-                      TableProperties* table_properties);
-  bool AreEqual(const ConfigOptions& opts,
-                const TableProperties* other_table_properties,
-                std::string* mismatch) const;
 };
 
 // Extra properties

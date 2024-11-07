@@ -179,8 +179,6 @@ class DummyTableFactory : public TableFactory {
   }
 
   std::string GetPrintableOptions() const override { return ""; }
-
-  std::unique_ptr<TableFactory> Clone() const override { return nullptr; }
 };
 
 class DummyMergeOperator : public MergeOperator {

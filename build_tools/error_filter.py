@@ -9,6 +9,7 @@
     - Prints those error messages to stdout
 """
 
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import re
 import sys
@@ -42,7 +43,7 @@ class GTestErrorParser(ErrorParserBase):
             return None
         gtest_fail_match = self._GTEST_FAIL_PATTERN.match(line)
         if gtest_fail_match:
-            return "{} failed: {}".format(self._last_gtest_name, gtest_fail_match.group(1))
+            return "%s failed: %s" % (self._last_gtest_name, gtest_fail_match.group(1))
         return None
 
 
@@ -65,52 +66,52 @@ class CompilerErrorParser(MatchErrorParser):
         # format (link error):
         #   '<filename>:<line #>: error: <error msg>'
         # The below regex catches both
-        super().__init__(r"\S+:\d+: error:")
+        super(CompilerErrorParser, self).__init__(r"\S+:\d+: error:")
 
 
 class ScanBuildErrorParser(MatchErrorParser):
     def __init__(self):
-        super().__init__(r"scan-build: \d+ bugs found.$")
+        super(ScanBuildErrorParser, self).__init__(r"scan-build: \d+ bugs found.$")
 
 
 class DbCrashErrorParser(MatchErrorParser):
     def __init__(self):
-        super().__init__(r"\*\*\*.*\^$|TEST FAILED.")
+        super(DbCrashErrorParser, self).__init__(r"\*\*\*.*\^$|TEST FAILED.")
 
 
 class WriteStressErrorParser(MatchErrorParser):
     def __init__(self):
-        super().__init__(
+        super(WriteStressErrorParser, self).__init__(
             r"ERROR: write_stress died with exitcode=\d+"
         )
 
 
 class AsanErrorParser(MatchErrorParser):
     def __init__(self):
-        super().__init__(r"==\d+==ERROR: AddressSanitizer:")
+        super(AsanErrorParser, self).__init__(r"==\d+==ERROR: AddressSanitizer:")
 
 
 class UbsanErrorParser(MatchErrorParser):
     def __init__(self):
         # format: '<filename>:<line #>:<column #>: runtime error: <error msg>'
-        super().__init__(r"\S+:\d+:\d+: runtime error:")
+        super(UbsanErrorParser, self).__init__(r"\S+:\d+:\d+: runtime error:")
 
 
 class ValgrindErrorParser(MatchErrorParser):
     def __init__(self):
         # just grab the summary, valgrind doesn't clearly distinguish errors
         # from other log messages.
-        super().__init__(r"==\d+== ERROR SUMMARY:")
+        super(ValgrindErrorParser, self).__init__(r"==\d+== ERROR SUMMARY:")
 
 
 class CompatErrorParser(MatchErrorParser):
     def __init__(self):
-        super().__init__(r"==== .*[Ee]rror.* ====$")
+        super(CompatErrorParser, self).__init__(r"==== .*[Ee]rror.* ====$")
 
 
 class TsanErrorParser(MatchErrorParser):
     def __init__(self):
-        super().__init__(r"WARNING: ThreadSanitizer:")
+        super(TsanErrorParser, self).__init__(r"WARNING: ThreadSanitizer:")
 
 
 _TEST_NAME_TO_PARSERS = {

@@ -133,9 +133,7 @@ Status Cache::CreateFromString(const ConfigOptions& config_options,
                                std::shared_ptr<Cache>* result) {
   Status status;
   std::shared_ptr<Cache> cache;
-  if (StartsWith(value, "null")) {
-    cache = nullptr;
-  } else if (value.find("://") == std::string::npos) {
+  if (value.find("://") == std::string::npos) {
     if (value.find('=') == std::string::npos) {
       cache = NewLRUCache(ParseSizeT(value));
     } else {

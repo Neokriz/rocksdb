@@ -233,8 +233,7 @@ Status DBImplSecondary::RecoverLogFiles(
           reader->GetRecordedTimestampSize();
       status = HandleWriteBatchTimestampSizeDifference(
           &batch, running_ts_sz, record_ts_sz,
-          TimestampSizeConsistencyMode::kVerifyConsistency, seq_per_batch_,
-          batch_per_txn_);
+          TimestampSizeConsistencyMode::kVerifyConsistency);
       if (!status.ok()) {
         break;
       }
@@ -248,7 +247,9 @@ Status DBImplSecondary::RecoverLogFiles(
           if (cfd == nullptr) {
             continue;
           }
-          cfds_changed->insert(cfd);
+          if (cfds_changed->count(cfd) == 0) {
+            cfds_changed->insert(cfd);
+          }
           const std::vector<FileMetaData*>& l0_files =
               cfd->current()->storage_info()->LevelFiles(0);
           SequenceNumber seq =

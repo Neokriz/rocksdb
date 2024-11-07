@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import argparse
 import math
@@ -47,7 +48,7 @@ default_params = {
     "charge_filter_construction": lambda: random.choice([0, 1]),
     "charge_table_reader": lambda: random.choice([0, 1]),
     "charge_file_metadata": lambda: random.choice([0, 1]),
-    "checkpoint_one_in": lambda: random.choice([0, 0, 10000, 1000000]),
+    "checkpoint_one_in": lambda: random.choice([10000, 1000000]),
     "compression_type": lambda: random.choice(
         ["none", "snappy", "zlib", "lz4", "lz4hc", "xpress", "zstd"]
     ),
@@ -104,7 +105,6 @@ default_params = {
     # Temporarily disable hash index
     "index_type": lambda: random.choice([0, 0, 0, 2, 2, 3]),
     "ingest_external_file_one_in": lambda: random.choice([1000, 1000000]),
-    "test_ingest_standalone_range_deletion_one_in": lambda: random.choice([0, 5, 10]),
     "iterpercent": 10,
     "lock_wal_one_in": lambda: random.choice([10000, 1000000]),
     "mark_for_compaction_one_file_in": lambda: 10 * random.randint(0, 1),
@@ -444,12 +444,10 @@ blackbox_default_params = {
     "duration": 6000,
     # time for one db_stress instance to run
     "interval": 120,
-    # time for the final verification step
-    "verify_timeout": 1200,
     # since we will be killing anyway, use large value for ops_per_thread
     "ops_per_thread": 100000000,
     "reopen": 0,
-    "set_options_one_in": 2000,
+    "set_options_one_in": 10000,
 }
 
 whitebox_default_params = {
@@ -843,7 +841,7 @@ def finalize_and_sanitize(src_params):
         # WriteCommitted only
         dest_params["use_put_entity_one_in"] = 0
         # MultiCfIterator is currently only compatible with write committed policy
-        dest_params["use_multi_cf_iterator"] = 0
+        dest_params["use_multi_cf_iterator"] = 0        
     # TODO(hx235): enable test_multi_ops_txns with fault injection after stabilizing the CI
     if dest_params.get("test_multi_ops_txns") == 1:
         dest_params["write_fault_one_in"] = 0
@@ -968,12 +966,6 @@ def finalize_and_sanitize(src_params):
     ):
         # At least one must be true
         dest_params["write_dbid_to_manifest"] = 1
-    # Checkpoint creation skips flush if the WAL is locked, so enabling lock_wal_one_in
-    # can cause checkpoint verification to fail. So make the two mutually exclusive.
-    if dest_params.get("checkpoint_one_in") != 0:
-        dest_params["lock_wal_one_in"] = 0
-    if dest_params.get("ingest_external_file_one_in") == 0 or dest_params.get("delrangepercent") == 0:
-        dest_params["test_ingest_standalone_range_deletion_one_in"] = 0
     return dest_params
 
 
@@ -1031,7 +1023,7 @@ def gen_cmd(params, unknown_params):
     cmd = (
         [stress_cmd]
         + [
-            f"--{k}={v}"
+            "--{0}={1}".format(k, v)
             for k, v in [(k, finalzied_params[k]) for k in sorted(finalzied_params)]
             if k
             not in {
@@ -1052,7 +1044,6 @@ def gen_cmd(params, unknown_params):
                 "cleanup_cmd",
                 "skip_tmpdir_check",
                 "print_stderr_separately",
-                "verify_timeout",
             }
             and v is not None
         ]
@@ -1061,10 +1052,9 @@ def gen_cmd(params, unknown_params):
     return cmd
 
 
-def execute_cmd(cmd, timeout=None, timeout_pstack=False):
+def execute_cmd(cmd, timeout=None):
     child = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
     print("Running db_stress with pid=%d: %s\n\n" % (child.pid, " ".join(cmd)))
-    pid = child.pid
 
     try:
         outs, errs = child.communicate(timeout=timeout)
@@ -1072,8 +1062,6 @@ def execute_cmd(cmd, timeout=None, timeout_pstack=False):
         print("WARNING: db_stress ended before kill: exitcode=%d\n" % child.returncode)
     except subprocess.TimeoutExpired:
         hit_timeout = True
-        if timeout_pstack:
-            os.system("pstack %d" % pid)
         child.kill()
         print("KILLED %d\n" % child.pid)
         outs, errs = child.communicate()
@@ -1148,7 +1136,7 @@ def blackbox_crash_main(args, unknown_args):
     cmd = gen_cmd(
         dict(list(cmd_params.items()) + list({"db": dbname}.items())), unknown_args
     )
-    hit_timeout, retcode, outs, errs = execute_cmd(cmd, cmd_params["verify_timeout"], True)
+    hit_timeout, retcode, outs, errs = execute_cmd(cmd)
 
     # For the final run
     print_output_and_exit_on_error(outs, errs, args.print_stderr_separately)
@@ -1290,7 +1278,7 @@ def whitebox_crash_main(args, unknown_args):
         hit_timeout, retncode, stdoutdata, stderrdata = execute_cmd(
             cmd, exit_time - time.time() + 900
         )
-        msg = "check_mode={}, kill option={}, exitcode={}\n".format(
+        msg = "check_mode={0}, kill option={1}, exitcode={2}\n".format(
             check_mode, additional_opts["kill_random_test"], retncode
         )
 

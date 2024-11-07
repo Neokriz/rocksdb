@@ -67,6 +67,7 @@ Status ExternalSstFileIngestionJob::Prepare(
     files_to_ingest_.emplace_back(std::move(file_to_ingest));
   }
 
+  const Comparator* ucmp = cfd_->internal_comparator().user_comparator();
   auto num_files = files_to_ingest_.size();
   if (num_files == 0) {
     return Status::InvalidArgument("The list of files is empty");
@@ -77,12 +78,16 @@ Status ExternalSstFileIngestionJob::Prepare(
       sorted_files.push_back(&files_to_ingest_[i]);
     }
 
-    std::sort(sorted_files.begin(), sorted_files.end(), file_range_checker_);
+    std::sort(
+        sorted_files.begin(), sorted_files.end(),
+        [&ucmp](const IngestedFileInfo* info1, const IngestedFileInfo* info2) {
+          return sstableKeyCompare(ucmp, info1->smallest_internal_key,
+                                   info2->smallest_internal_key) < 0;
+        });
 
     for (size_t i = 0; i + 1 < num_files; i++) {
-      if (file_range_checker_.OverlapsWithPrev(sorted_files[i],
-                                               sorted_files[i + 1],
-                                               /* ranges_sorted= */ true)) {
+      if (sstableKeyCompare(ucmp, sorted_files[i]->largest_internal_key,
+                            sorted_files[i + 1]->smallest_internal_key) >= 0) {
         files_overlap_ = true;
         break;
       }
@@ -95,15 +100,7 @@ Status ExternalSstFileIngestionJob::Prepare(
         "behind mode.");
   }
 
-  // Overlapping files need at least two different sequence numbers. If settings
-  // disables global seqno, ingestion will fail anyway, so fail fast in prepare.
-  if (!ingestion_options_.allow_global_seqno && files_overlap_) {
-    return Status::InvalidArgument(
-        "Global seqno is required, but disabled (because external files key "
-        "range overlaps).");
-  }
-
-  if (ucmp_->timestamp_size() > 0 && files_overlap_) {
+  if (ucmp->timestamp_size() > 0 && files_overlap_) {
     return Status::NotSupported(
         "Files with overlapping ranges cannot be ingested to column "
         "family with user-defined timestamp enabled.");
@@ -339,33 +336,7 @@ Status ExternalSstFileIngestionJob::Prepare(
     }
   }
 
-  if (status.ok()) {
-    DivideInputFilesIntoBatches();
-  }
-
   return status;
-}
-
-void ExternalSstFileIngestionJob::DivideInputFilesIntoBatches() {
-  if (!files_overlap_) {
-    // No overlap, treat as one batch without the need of tracking overall batch
-    // range.
-    file_batches_to_ingest_.emplace_back(/* _track_batch_range= */ false);
-    for (auto& file : files_to_ingest_) {
-      file_batches_to_ingest_.back().AddFile(&file, file_range_checker_);
-    }
-    return;
-  }
-
-  file_batches_to_ingest_.emplace_back(/* _track_batch_range= */ true);
-  for (auto& file : files_to_ingest_) {
-    if (file_range_checker_.OverlapsWithPrev(&file_batches_to_ingest_.back(),
-                                             &file,
-                                             /* ranges_sorted= */ false)) {
-      file_batches_to_ingest_.emplace_back(/* _track_batch_range= */ true);
-    }
-    file_batches_to_ingest_.back().AddFile(&file, file_range_checker_);
-  }
 }
 
 Status ExternalSstFileIngestionJob::NeedsFlush(bool* flush_needed,
@@ -382,7 +353,9 @@ Status ExternalSstFileIngestionJob::NeedsFlush(bool* flush_needed,
     if (!ingestion_options_.allow_blocking_flush) {
       status = Status::InvalidArgument("External file requires flush");
     }
-    if (ucmp_->timestamp_size() > 0) {
+    auto ucmp = cfd_->user_comparator();
+    assert(ucmp);
+    if (ucmp->timestamp_size() > 0) {
       status = Status::InvalidArgument(
           "Column family enables user-defined timestamps, please make "
           "sure the key range (without timestamp) of external file does not "
@@ -395,16 +368,8 @@ Status ExternalSstFileIngestionJob::NeedsFlush(bool* flush_needed,
 // REQUIRES: we have become the only writer by entering both write_thread_ and
 // nonmem_write_thread_
 Status ExternalSstFileIngestionJob::Run() {
-  SuperVersion* super_version = cfd_->GetSuperVersion();
-  // If column family is flushed after Prepare and before Run, we should have a
-  // specific state of Memtables. The mutable Memtable should be empty, and the
-  // immutable Memtable list should be empty.
-  if (flushed_before_run_ && (super_version->imm->NumNotFlushed() != 0 ||
-                              super_version->mem->GetDataSize() != 0)) {
-    return Status::TryAgain(
-        "Inconsistent memtable state detected when flushed before run.");
-  }
   Status status;
+  SuperVersion* super_version = cfd_->GetSuperVersion();
 #ifndef NDEBUG
   // We should never run the job with a memtable that is overlapping
   // with the files we are ingesting
@@ -432,39 +397,14 @@ Status ExternalSstFileIngestionJob::Run() {
   edit_.SetColumnFamily(cfd_->GetID());
   // The levels that the files will be ingested into
 
-  std::optional<int> prev_batch_uppermost_level;
-  for (auto& batch : file_batches_to_ingest_) {
-    int batch_uppermost_level = 0;
-    status = AssignLevelsForOneBatch(batch, super_version, force_global_seqno,
-                                     &last_seqno, &batch_uppermost_level,
-                                     prev_batch_uppermost_level);
-    if (!status.ok()) {
-      return status;
-    }
-
-    prev_batch_uppermost_level = batch_uppermost_level;
-  }
-
-  CreateEquivalentFileIngestingCompactions();
-  return status;
-}
-
-Status ExternalSstFileIngestionJob::AssignLevelsForOneBatch(
-    FileBatchInfo& batch, SuperVersion* super_version, bool force_global_seqno,
-    SequenceNumber* last_seqno, int* batch_uppermost_level,
-    std::optional<int> prev_batch_uppermost_level) {
-  Status status;
-  assert(batch_uppermost_level);
-  *batch_uppermost_level = std::numeric_limits<int>::max();
-  for (IngestedFileInfo* file : batch.files) {
-    assert(file);
+  for (IngestedFileInfo& f : files_to_ingest_) {
     SequenceNumber assigned_seqno = 0;
     if (ingestion_options_.ingest_behind) {
-      status = CheckLevelForIngestedBehindFile(file);
+      status = CheckLevelForIngestedBehindFile(&f);
     } else {
       status = AssignLevelAndSeqnoForIngestedFile(
           super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
-          *last_seqno, file, &assigned_seqno, prev_batch_uppermost_level);
+          last_seqno, &f, &assigned_seqno);
     }
 
     // Modify the smallest/largest internal key to include the sequence number
@@ -473,38 +413,38 @@ Status ExternalSstFileIngestionJob::AssignLevelsForOneBatch(
     // exclusive endpoint.
     ParsedInternalKey smallest_parsed, largest_parsed;
     if (status.ok()) {
-      status = ParseInternalKey(*(file->smallest_internal_key.rep()),
+      status = ParseInternalKey(*f.smallest_internal_key.rep(),
                                 &smallest_parsed, false /* log_err_key */);
     }
     if (status.ok()) {
-      status = ParseInternalKey(*(file->largest_internal_key.rep()),
-                                &largest_parsed, false /* log_err_key */);
+      status = ParseInternalKey(*f.largest_internal_key.rep(), &largest_parsed,
+                                false /* log_err_key */);
     }
     if (!status.ok()) {
       return status;
     }
     if (smallest_parsed.sequence == 0 && assigned_seqno != 0) {
-      UpdateInternalKey(file->smallest_internal_key.rep(), assigned_seqno,
+      UpdateInternalKey(f.smallest_internal_key.rep(), assigned_seqno,
                         smallest_parsed.type);
     }
     if (largest_parsed.sequence == 0 && assigned_seqno != 0) {
-      UpdateInternalKey(file->largest_internal_key.rep(), assigned_seqno,
+      UpdateInternalKey(f.largest_internal_key.rep(), assigned_seqno,
                         largest_parsed.type);
     }
 
-    status = AssignGlobalSeqnoForIngestedFile(file, assigned_seqno);
+    status = AssignGlobalSeqnoForIngestedFile(&f, assigned_seqno);
     if (!status.ok()) {
       return status;
     }
     TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Run",
                              &assigned_seqno);
-    assert(assigned_seqno == 0 || assigned_seqno == *last_seqno + 1);
-    if (assigned_seqno > *last_seqno) {
-      *last_seqno = assigned_seqno;
+    assert(assigned_seqno == 0 || assigned_seqno == last_seqno + 1);
+    if (assigned_seqno > last_seqno) {
+      last_seqno = assigned_seqno;
       ++consumed_seqno_count_;
     }
 
-    status = GenerateChecksumForIngestedFile(file);
+    status = GenerateChecksumForIngestedFile(&f);
     if (!status.ok()) {
       return status;
     }
@@ -519,40 +459,31 @@ Status ExternalSstFileIngestionJob::AssignLevelsForOneBatch(
           static_cast<uint64_t>(temp_current_time);
     }
     uint64_t tail_size = 0;
-    bool contain_no_data_blocks = file->table_properties.num_entries > 0 &&
-                                  (file->table_properties.num_entries ==
-                                   file->table_properties.num_range_deletions);
-    if (file->table_properties.tail_start_offset > 0 ||
-        contain_no_data_blocks) {
-      uint64_t file_size = file->fd.GetFileSize();
-      assert(file->table_properties.tail_start_offset <= file_size);
-      tail_size = file_size - file->table_properties.tail_start_offset;
+    bool contain_no_data_blocks = f.table_properties.num_entries > 0 &&
+                                  (f.table_properties.num_entries ==
+                                   f.table_properties.num_range_deletions);
+    if (f.table_properties.tail_start_offset > 0 || contain_no_data_blocks) {
+      uint64_t file_size = f.fd.GetFileSize();
+      assert(f.table_properties.tail_start_offset <= file_size);
+      tail_size = file_size - f.table_properties.tail_start_offset;
     }
 
-    bool marked_for_compaction =
-        file->table_properties.num_range_deletions == 1 &&
-        (file->table_properties.num_entries ==
-         file->table_properties.num_range_deletions);
     FileMetaData f_metadata(
-        file->fd.GetNumber(), file->fd.GetPathId(), file->fd.GetFileSize(),
-        file->smallest_internal_key, file->largest_internal_key,
-        file->assigned_seqno, file->assigned_seqno, false,
-        file->file_temperature, kInvalidBlobFileNumber, oldest_ancester_time,
-        current_time,
+        f.fd.GetNumber(), f.fd.GetPathId(), f.fd.GetFileSize(),
+        f.smallest_internal_key, f.largest_internal_key, f.assigned_seqno,
+        f.assigned_seqno, false, f.file_temperature, kInvalidBlobFileNumber,
+        oldest_ancester_time, current_time,
         ingestion_options_.ingest_behind
             ? kReservedEpochNumberForFileIngestedBehind
             : cfd_->NewEpochNumber(),
-        file->file_checksum, file->file_checksum_func_name, file->unique_id, 0,
-        tail_size, file->user_defined_timestamps_persisted);
-    f_metadata.temperature = file->file_temperature;
-    f_metadata.marked_for_compaction = marked_for_compaction;
-    edit_.AddFile(file->picked_level, f_metadata);
-
-    *batch_uppermost_level =
-        std::min(*batch_uppermost_level, file->picked_level);
+        f.file_checksum, f.file_checksum_func_name, f.unique_id, 0, tail_size,
+        f.user_defined_timestamps_persisted);
+    f_metadata.temperature = f.file_temperature;
+    edit_.AddFile(f.picked_level, f_metadata);
   }
 
-  return Status::OK();
+  CreateEquivalentFileIngestingCompactions();
+  return status;
 }
 
 void ExternalSstFileIngestionJob::CreateEquivalentFileIngestingCompactions() {
@@ -588,17 +519,20 @@ void ExternalSstFileIngestionJob::CreateEquivalentFileIngestingCompactions() {
     file_ingesting_compactions_.push_back(new Compaction(
         cfd_->current()->storage_info(), *cfd_->ioptions(), mutable_cf_options,
         mutable_db_options_, {input}, output_level,
-        /* output file size limit not applicable */
-        MaxFileSizeForLevel(mutable_cf_options, output_level,
-                            cfd_->ioptions()->compaction_style),
+        MaxFileSizeForLevel(
+            mutable_cf_options, output_level,
+            cfd_->ioptions()->compaction_style) /* output file size
+            limit,
+                                                 * not applicable
+                                                 */
+        ,
         LLONG_MAX /* max compaction bytes, not applicable */,
         0 /* output path ID, not applicable */, mutable_cf_options.compression,
         mutable_cf_options.compression_opts,
         mutable_cf_options.default_write_temperature,
         0 /* max_subcompaction, not applicable */,
-        {} /* grandparents, not applicable */,
-        std::nullopt /* earliest_snapshot */, nullptr /* snapshot_checker */,
-        false /* is manual */, "" /* trim_ts */, -1 /* score, not applicable */,
+        {} /* grandparents, not applicable */, false /* is manual */,
+        "" /* trim_ts */, -1 /* score, not applicable */,
         false /* is deletion compaction, not applicable */,
         files_overlap_ /* l0_files_might_overlap, not applicable */,
         CompactionReason::kExternalSstIngestion));
@@ -745,10 +679,7 @@ Status ExternalSstFileIngestionJob::ResetTableReader(
       new RandomAccessFileReader(std::move(sst_file), external_file,
                                  nullptr /*Env*/, io_tracer_));
   table_reader->reset();
-  ReadOptions ro;
-  ro.fill_cache = ingestion_options_.fill_cache;
-  status = sv->mutable_cf_options.table_factory->NewTableReader(
-      ro,
+  status = cfd_->ioptions()->table_factory->NewTableReader(
       TableReaderOptions(
           *cfd_->ioptions(), sv->mutable_cf_options.prefix_extractor,
           env_options_, cfd_->internal_comparator(),
@@ -760,9 +691,7 @@ Status ExternalSstFileIngestionJob::ResetTableReader(
           /*cur_file_num*/ new_file_number,
           /* unique_id */ {}, /* largest_seqno */ 0,
           /* tail_size */ 0, user_defined_timestamps_persisted),
-      std::move(sst_file_reader), file_to_ingest->file_size, table_reader,
-      // No need to prefetch index/filter if caching is not needed.
-      /*prefetch_index_and_filter_in_cache=*/ingestion_options_.fill_cache);
+      std::move(sst_file_reader), file_to_ingest->file_size, table_reader);
   return status;
 }
 
@@ -778,7 +707,6 @@ Status ExternalSstFileIngestionJob::SanityCheckTableProperties(
   // Get table version
   auto version_iter = uprops.find(ExternalSstFilePropertyNames::kVersion);
   if (version_iter == uprops.end()) {
-    assert(!SstFileWriter::CreatedBySstFileWriter(*props));
     if (!ingestion_options_.allow_db_generated_files) {
       return Status::Corruption("External file version not found");
     } else {
@@ -787,7 +715,6 @@ Status ExternalSstFileIngestionJob::SanityCheckTableProperties(
       file_to_ingest->version = 0;
     }
   } else {
-    assert(SstFileWriter::CreatedBySstFileWriter(*props));
     file_to_ingest->version = DecodeFixed32(version_iter->second.c_str());
   }
 
@@ -860,7 +787,9 @@ Status ExternalSstFileIngestionJob::SanityCheckTableProperties(
   // `TableReader` is initialized with `user_defined_timestamps_persisted` flag
   // to be true. If its value changed to false after this sanity check, we
   // need to reset the `TableReader`.
-  if (ucmp_->timestamp_size() > 0 &&
+  auto ucmp = cfd_->user_comparator();
+  assert(ucmp);
+  if (ucmp->timestamp_size() > 0 &&
       !file_to_ingest->user_defined_timestamps_persisted) {
     s = ResetTableReader(external_file, new_file_number,
                          file_to_ingest->user_defined_timestamps_persisted, sv,
@@ -910,7 +839,6 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
     // TODO: plumb Env::IOActivity, Env::IOPriority
     ReadOptions ro;
     ro.readahead_size = ingestion_options_.verify_checksums_readahead_size;
-    ro.fill_cache = ingestion_options_.fill_cache;
     status = table_reader->VerifyChecksum(
         ro, TableReaderCaller::kExternalSSTIngestion);
     if (!status.ok()) {
@@ -921,12 +849,16 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
   ParsedInternalKey key;
   // TODO: plumb Env::IOActivity, Env::IOPriority
   ReadOptions ro;
-  ro.fill_cache = ingestion_options_.fill_cache;
   std::unique_ptr<InternalIterator> iter(table_reader->NewIterator(
       ro, sv->mutable_cf_options.prefix_extractor.get(), /*arena=*/nullptr,
       /*skip_filters=*/false, TableReaderCaller::kExternalSSTIngestion));
 
   // Get first (smallest) and last (largest) key from file.
+  file_to_ingest->smallest_internal_key =
+      InternalKey("", 0, ValueType::kTypeValue);
+  file_to_ingest->largest_internal_key =
+      InternalKey("", 0, ValueType::kTypeValue);
+  bool bounds_set = false;
   bool allow_data_in_errors = db_options_.allow_data_in_errors;
   iter->SeekToFirst();
   if (iter->Valid()) {
@@ -942,8 +874,7 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
     file_to_ingest->smallest_internal_key.SetFrom(key);
 
     Slice largest;
-    if (strcmp(sv->mutable_cf_options.table_factory->Name(), "PlainTable") ==
-        0) {
+    if (strcmp(cfd_->ioptions()->table_factory->Name(), "PlainTable") == 0) {
       // PlainTable iterator does not support SeekToLast().
       largest = iter->key();
       for (; iter->Valid(); iter->Next()) {
@@ -977,6 +908,8 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
       return Status::Corruption("External file has non zero sequence number");
     }
     file_to_ingest->largest_internal_key.SetFrom(key);
+
+    bounds_set = true;
   } else if (!iter->status().ok()) {
     return iter->status();
   }
@@ -1013,6 +946,7 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
       table_reader->NewRangeTombstoneIterator(ro));
   // We may need to adjust these key bounds, depending on whether any range
   // deletion tombstones extend past them.
+  const Comparator* ucmp = cfd_->user_comparator();
   if (range_del_iter != nullptr) {
     for (range_del_iter->SeekToFirst(); range_del_iter->Valid();
          range_del_iter->Next()) {
@@ -1028,13 +962,24 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
             "number.");
       }
       RangeTombstone tombstone(key, range_del_iter->value());
-      file_range_checker_.MaybeUpdateRange(tombstone.SerializeKey(),
-                                           tombstone.SerializeEndKey(),
-                                           file_to_ingest);
+
+      InternalKey start_key = tombstone.SerializeKey();
+      if (!bounds_set ||
+          sstableKeyCompare(ucmp, start_key,
+                            file_to_ingest->smallest_internal_key) < 0) {
+        file_to_ingest->smallest_internal_key = start_key;
+      }
+      InternalKey end_key = tombstone.SerializeEndKey();
+      if (!bounds_set ||
+          sstableKeyCompare(ucmp, end_key,
+                            file_to_ingest->largest_internal_key) > 0) {
+        file_to_ingest->largest_internal_key = end_key;
+      }
+      bounds_set = true;
     }
   }
 
-  const size_t ts_sz = ucmp_->timestamp_size();
+  const size_t ts_sz = ucmp->timestamp_size();
   Slice smallest = file_to_ingest->smallest_internal_key.user_key();
   Slice largest = file_to_ingest->largest_internal_key.user_key();
   if (ts_sz > 0) {
@@ -1063,19 +1008,16 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
 Status ExternalSstFileIngestionJob::AssignLevelAndSeqnoForIngestedFile(
     SuperVersion* sv, bool force_global_seqno, CompactionStyle compaction_style,
     SequenceNumber last_seqno, IngestedFileInfo* file_to_ingest,
-    SequenceNumber* assigned_seqno,
-    std::optional<int> prev_batch_uppermost_level) {
+    SequenceNumber* assigned_seqno) {
   Status status;
   *assigned_seqno = 0;
-  const size_t ts_sz = ucmp_->timestamp_size();
-  assert(!prev_batch_uppermost_level.has_value() ||
-         prev_batch_uppermost_level.value() < cfd_->NumberLevels());
-  bool must_assign_to_l0 = prev_batch_uppermost_level.has_value() &&
-                           prev_batch_uppermost_level.value() == 0;
+  auto ucmp = cfd_->user_comparator();
+  const size_t ts_sz = ucmp->timestamp_size();
   if (force_global_seqno || files_overlap_ ||
-      compaction_style == kCompactionStyleFIFO || must_assign_to_l0) {
+      compaction_style == kCompactionStyleFIFO) {
     *assigned_seqno = last_seqno + 1;
-    if (compaction_style == kCompactionStyleFIFO || must_assign_to_l0) {
+    // If files overlap, we have to ingest them at level 0.
+    if (files_overlap_ || compaction_style == kCompactionStyleFIFO) {
       assert(ts_sz == 0);
       file_to_ingest->picked_level = 0;
       if (ingestion_options_.fail_if_not_bottommost_level &&
@@ -1092,16 +1034,11 @@ Status ExternalSstFileIngestionJob::AssignLevelAndSeqnoForIngestedFile(
   Arena arena;
   // TODO: plumb Env::IOActivity, Env::IOPriority
   ReadOptions ro;
-  ro.fill_cache = ingestion_options_.fill_cache;
   ro.total_order_seek = true;
   int target_level = 0;
   auto* vstorage = cfd_->current()->storage_info();
-  assert(!must_assign_to_l0);
-  int exclusive_end_level = prev_batch_uppermost_level.has_value()
-                                ? prev_batch_uppermost_level.value()
-                                : cfd_->NumberLevels();
 
-  for (int lvl = 0; lvl < exclusive_end_level; lvl++) {
+  for (int lvl = 0; lvl < cfd_->NumberLevels(); lvl++) {
     if (lvl > 0 && lvl < vstorage->base_level()) {
       continue;
     }
@@ -1128,6 +1065,8 @@ Status ExternalSstFileIngestionJob::AssignLevelAndSeqnoForIngestedFile(
         overlap_with_db = true;
         break;
       }
+    } else if (compaction_style == kCompactionStyleUniversal) {
+      continue;
     }
 
     // We don't overlap with any keys in this level, but we still need to check
