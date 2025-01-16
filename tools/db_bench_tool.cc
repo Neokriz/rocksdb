@@ -1581,6 +1581,13 @@ DEFINE_double(mix_seek_ratio, 0.0,
               "The ratio of Seek queries of mix_graph workload");
 DEFINE_int64(mix_max_scan_len, 10000, "The max scan length of Iterator");
 DEFINE_int64(mix_max_value_size, 1024, "The max value size of this workload");
+
+//yhh,byhs::mixgraph modify
+DEFINE_int64(mix_min_value_size, 10, "mix_min_value_size"); //
+DEFINE_bool(mix_only_put, false, "mixgraph only write"); //
+//yhh,byhs::mixgraph modify
+DEFINE_double(num_key_range, 1, "Max key range"); //
+
 DEFINE_double(
     sine_mix_rate_noise, 0.0,
     "Add the noise ratio to the sine rate, it is between 0.0 and 1.0");
@@ -6673,6 +6680,12 @@ class Benchmark {
       GenerateKeyFromInt(key_rand, FLAGS_num, &key);
       int query_type = query.GetType(rand_v);
 
+      //yhh,byhs :: start, mixgraph modify
+      if(FLAGS_mix_only_put == true){
+        query_type = 1;
+      }
+      //yhh,byhs :: end
+
       // change the qps
       uint64_t now = FLAGS_env->NowMicros();
       uint64_t usecs_since_last;
@@ -6734,8 +6747,14 @@ class Benchmark {
         puts++;
         int64_t val_size = ParetoCdfInversion(u, FLAGS_value_theta,
                                               FLAGS_value_k, FLAGS_value_sigma);
-        if (val_size < 10) {
-          val_size = 10;
+        //yhh::original code(2 line)
+        //if (val_size < 10) {
+        //  val_size = 10;
+
+        //yhh,byhs::start, mixgraph modify
+        if (val_size < FLAGS_mix_min_value_size) { //
+          val_size = FLAGS_mix_min_value_size; //
+        //yhh,byhs::end
         } else if (val_size > value_max) {
           val_size = val_size % value_max;
         }

@@ -11,6 +11,9 @@
 #include "rocksdb/file_system.h"
 #include "table/block_based/block_based_table_reader.h"
 
+//yhh::
+#include "iostream"
+
 namespace ROCKSDB_NAMESPACE {
 void BlockPrefetcher::PrefetchIfNeeded(
     const BlockBasedTable::Rep* rep, const BlockHandle& handle,
@@ -43,6 +46,12 @@ void BlockPrefetcher::PrefetchIfNeeded(
       if (!s.ok()) {
         return;
       }
+
+      //yhh::1225::logging start
+      std::cout << "/table/block_based/block_prefetcher.cc:: if (!rep->file->use_direct_io() && compaction_readahead_size_ > 0): " \
+        << compaction_readahead_size_ << std::endl;
+      //yhh::1225::logging end
+
       s = rep->file->Prefetch(opts, offset, len + compaction_readahead_size_);
       if (s.ok()) {
         readahead_limit_ = offset + len + compaction_readahead_size_;
@@ -56,16 +65,41 @@ void BlockPrefetcher::PrefetchIfNeeded(
     //
     // num_file_reads is used  by FilePrefetchBuffer only when
     // implicit_auto_readahead is set.
+
+    //yhh::1225::logging start
+    //yhh::db_bench -compaction_readahead_size option trigger this area
+    //std::cout << "/table/block_based/block_prefetcher.cc:: If FS prefetch is not supported-- :compaction_readahead_size_ " 
+    //  << compaction_readahead_size_ << std::endl;
+    //std::cout << "/table/block_based/block_prefetcher.cc:: If FS prefetch is not supported-- :rep->level " 
+    //  << rep->level << std::endl;
+    //yhh::1225::logging end
+    //
+    if(rep->level == 0) {
+      size_t larger_readahead_size_ = compaction_readahead_size_ * 16;
+	    
+      readahead_params.initial_readahead_size = larger_readahead_size_;
+      readahead_params.max_readahead_size = larger_readahead_size_;
+      rep->CreateFilePrefetchBufferIfNotExists(readahead_params,
+                                             &prefetch_buffer_,
+                                             /*readaheadsize_cb=*/nullptr);
+    }
+    else {
     readahead_params.initial_readahead_size = compaction_readahead_size_;
     readahead_params.max_readahead_size = compaction_readahead_size_;
     rep->CreateFilePrefetchBufferIfNotExists(readahead_params,
                                              &prefetch_buffer_,
                                              /*readaheadsize_cb=*/nullptr);
+    }
     return;
   }
 
   // Explicit user requested readahead.
   if (readahead_size > 0) {
+    //yhh::1225::logging start
+    std::cout << "/table/block_based/block_prefetcher.cc:: Explicit user requested readahead(size): " \
+      << readahead_size << std::endl;
+    //yhh::1225::logging end
+
     rep->CreateFilePrefetchBufferIfNotExists(
         readahead_params, &prefetch_buffer_, readaheadsize_cb,
         /*usage=*/FilePrefetchBufferUsage::kUserScanPrefetch);
