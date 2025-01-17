@@ -99,6 +99,13 @@ class ThreadPoolImpl : public ThreadPool {
   static void PthreadCall(const char* label, int result);
 
   struct Impl;
+  
+//yhh::added to import YCSB (source from ADOC)
+//for FEAT
+  std::vector<std::pair<size_t, uint64_t>>* GetThreadWaitingTime();
+  std::vector<std::pair<std::string,uint64_t>>* GetThreadCreatingTime();
+  std::string GetThreadTimingString();
+//yhh::end
 
  private:
   // Current public interface does not provide usable

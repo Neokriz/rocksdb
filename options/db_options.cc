@@ -792,9 +792,13 @@ ImmutableDBOptions::ImmutableDBOptions(const DBOptions& options)
       checksum_handoff_file_types(options.checksum_handoff_file_types),
       lowest_used_cache_tier(options.lowest_used_cache_tier),
       compaction_service(options.compaction_service),
+      //yhh::modified for YCSB import (source from ADOC)
+      //enforce_single_del_contracts(options.enforce_single_del_contracts),
       enforce_single_del_contracts(options.enforce_single_del_contracts),
-      follower_refresh_catchup_period_ms(
-          options.follower_refresh_catchup_period_ms),
+      core_number(options.core_number),
+      max_memtable_size(options.max_memtable_size),
+      //yhh::end
+      follower_refresh_catchup_period_ms(options.follower_refresh_catchup_period_ms),
       follower_catchup_retry_count(options.follower_catchup_retry_count),
       follower_catchup_retry_wait_ms(options.follower_catchup_retry_wait_ms),
       metadata_write_temperature(options.metadata_write_temperature),
@@ -803,6 +807,11 @@ ImmutableDBOptions::ImmutableDBOptions(const DBOptions& options)
   clock = env->GetSystemClock().get();
   logger = info_log.get();
   stats = statistics.get();
+
+  //yhh::added to import YCSB (source from ADOC)
+  job_stats = std::make_shared<std::vector<QuicksandMetrics>>();
+  flush_stats = std::make_shared<std::vector<FlushMetrics>>();
+  //yhh::end
 }
 
 void ImmutableDBOptions::Dump(Logger* log) const {

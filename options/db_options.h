@@ -102,6 +102,14 @@ struct ImmutableDBOptions {
   CacheTier lowest_used_cache_tier;
   std::shared_ptr<CompactionService> compaction_service;
   bool enforce_single_del_contracts;
+
+  //yhh::added to import YCSB (source from ADOC)
+  uint64_t core_number; //
+  uint64_t max_memtable_size; //
+  std::shared_ptr<std::vector<QuicksandMetrics>> job_stats; //
+  std::shared_ptr<std::vector<FlushMetrics>> flush_stats; //
+  //yhh::end
+
   uint64_t follower_refresh_catchup_period_ms;
   uint64_t follower_catchup_retry_count;
   uint64_t follower_catchup_retry_wait_ms;

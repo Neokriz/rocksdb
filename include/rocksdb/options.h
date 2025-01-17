@@ -1575,6 +1575,16 @@ struct DBOptions {
   // inconsistency, e.g. deleted old data become visible again, etc.
   bool enforce_single_del_contracts = true;
 
+//yhh::added to import YCSB (source from ADOC)
+  /// for FEAT
+  // This is an immutable option, that indicates the max core number we can use
+  // in the system.
+  uint64_t core_number = 20;
+  // Here is the max size of target system. It surppose to be immutable, but
+  // who knows.
+  uint64_t max_memtable_size = 512 << 20;
+//yhh::end
+
   // Implementing off-peak duration awareness in RocksDB. In this context,
   // "off-peak time" signifies periods characterized by significantly less read
   // and write activity compared to other times. By leveraging this knowledge,

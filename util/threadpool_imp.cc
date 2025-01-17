@@ -51,6 +51,29 @@ struct ThreadPoolImpl::Impl {
   void SetBackgroundThreadsInternal(int num, bool allow_reduce);
   int GetBackgroundThreads();
 
+//yhh::added to import YCSB (source from ADOC)
+  //for fEAT
+  std::vector<std::pair<size_t, uint64_t>>* GetThreadPoolWaiting() {
+    return &this->thread_waiting_time;
+  };
+  std::string GetThreadPoolTiming() {
+    std::stringstream ss;
+    ss << "timestamp (micros) of each thread creating\n";
+
+    for (auto pair : thread_creating_time) {
+      ss << "" << pair.first << " : " << pair.second << "\n";
+    }
+    ss << "micro seconds waiting for next mission"
+       << "\n";
+
+    for (auto pair : thread_waiting_time) {
+      ss << pair.first << " : " << pair.second << "\n";
+    }
+    ss << "\n";
+    return ss.str();
+  }
+//yhh::end
+
   unsigned int GetQueueLen() const {
     return queue_len_.load(std::memory_order_relaxed);
   }
@@ -119,6 +142,12 @@ struct ThreadPoolImpl::Impl {
     WakeUpAllThreads();
     return released_threads_in_success;
   }
+//yhh::added to import YCSB (source from ADOC)
+  // for FEAT
+
+  std::vector<std::pair<size_t, uint64_t>> thread_waiting_time;
+  std::vector<std::pair<std::string, uint64_t>> thread_creating_time;
+//yhh::end
 
  private:
   static void BGThreadWrapper(void* arg);
@@ -157,6 +186,20 @@ struct ThreadPoolImpl::Impl {
   std::condition_variable bgsignal_;
   std::vector<port::Thread> bgthreads_;
 };
+
+//yhh::added to import YCSB (source from ADOC) buy863
+std::vector<std::pair<size_t, uint64_t>>*
+ThreadPoolImpl::GetThreadWaitingTime() {
+  return &impl_->thread_waiting_time;
+}
+std::vector<std::pair<std::string, uint64_t>>*
+ThreadPoolImpl::GetThreadCreatingTime() {
+  return &impl_->thread_creating_time;
+}
+std::string ThreadPoolImpl::GetThreadTimingString() {
+  return impl_->GetThreadPoolTiming();
+}
+//yhh::end buy863
 
 inline ThreadPoolImpl::Impl::Impl()
     : low_io_priority_(false),

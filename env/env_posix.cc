@@ -394,6 +394,43 @@ class PosixEnv : public CompositeEnv {
     thread_pools_[pool].LowerCPUPriority(pri);
     return Status::OK();
   }
+//yhh::added to import YCSB (source from ADOC)  qre207
+  // for FEAT usage
+  //
+
+  std::vector<std::pair<size_t, uint64_t>> GetThreadWaitingTime() {
+    std::vector<std::pair<size_t, uint64_t>> results;
+    for (uint64_t i = 0; i < thread_pools_.size(); i++) {
+      auto waiting_time_list = thread_pools_[i].GetThreadWaitingTime();
+      results.insert(results.end(), waiting_time_list->begin(),
+                     waiting_time_list->end());
+    }
+    return results;
+  }
+  std::vector<std::pair<std::string, uint64_t>> GetThreadCreatingTime() {
+    std::vector<std::pair<std::string, uint64_t>> results;
+    for (uint64_t i = 0; i < thread_pools_.size(); i++) {
+      auto create_time_list = thread_pools_[i].GetThreadCreatingTime();
+      results.insert(results.end(), create_time_list->begin(),
+                     create_time_list->end());
+    }
+    return results;
+  }
+  std::string GetThreadPoolTimeStateString() override {
+    std::stringstream ss;
+    for (uint64_t i = 0; i < thread_pools_.size(); i++) {
+      ss << "Thread States for Pool Priority: "
+         << Env::PriorityToString(thread_pools_[i].GetThreadPriority()) << "\n";
+      ss << thread_pools_[i].GetThreadTimingString();
+    }
+    return ss.str();
+  }
+  std::vector<std::pair<size_t, uint64_t>>* GetThreadPoolWaitingTime(
+      Env::Priority priority) override {
+    assert(priority >= Priority::BOTTOM && priority <= Priority::HIGH);
+    return thread_pools_[priority].GetThreadWaitingTime();
+  }
+//yhh::end qre207
 
  private:
   friend Env* Env::Default();
