@@ -968,7 +968,7 @@ DEFINE_int64(random_fill_average, 150, "average inputs rate of background write 
 
 //yhh,byhs::added for mixgraph_write-only workload options
 DEFINE_double(num_key_range, 1, "Max key range");
-DEFINE_int64(mix_min_value)size, 10, "mix_min_value_size");
+DEFINE_int64(mix_min_value_size, 10, "mix_min_value_size");
 DEFINE_bool(mix_only_put, false, "mixgraph only write");
 //yhh,byhs::end of addition
 
@@ -7321,7 +7321,7 @@ class Benchmark {
       int query_type = query.GetType(rand_v);
 
       //yhh,byhs::added for mixgraph_write-only workload options
-      if(FLAGS_mix_only_put == ture) {
+      if(FLAGS_mix_only_put == true) {
         query_type = 1;
       }
       //yhh,byhs::end of additon
