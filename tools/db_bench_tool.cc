@@ -966,6 +966,12 @@ DEFINE_int64(running_num, 100000, "Num of operations in running phrase");
 DEFINE_int64(random_fill_average, 150, "average inputs rate of background write operations");
 //yhh::end of addition
 
+//yhh,byhs::added for mixgraph_write-only workload options
+DEFINE_double(num_key_range, 1, "Max key range");
+DEFINE_int64(mix_min_value)size, 10, "mix_min_value_size");
+DEFINE_bool(mix_only_put, false, "mixgraph only write");
+//yhh,byhs::end of addition
+
 DEFINE_bool(paranoid_checks, ROCKSDB_NAMESPACE::Options().paranoid_checks,
             "RocksDB will aggressively check consistency of the data.");
 
@@ -7314,6 +7320,12 @@ class Benchmark {
       GenerateKeyFromInt(key_rand, FLAGS_num, &key);
       int query_type = query.GetType(rand_v);
 
+      //yhh,byhs::added for mixgraph_write-only workload options
+      if(FLAGS_mix_only_put == ture) {
+        query_type = 1;
+      }
+      //yhh,byhs::end of additon
+
       // change the qps
       uint64_t now = FLAGS_env->NowMicros();
       uint64_t usecs_since_last;
@@ -7375,8 +7387,12 @@ class Benchmark {
         puts++;
         int64_t val_size = ParetoCdfInversion(u, FLAGS_value_theta,
                                               FLAGS_value_k, FLAGS_value_sigma);
-        if (val_size < 10) {
-          val_size = 10;
+        //yhh,byhs::modified for mixgraph_write-only workload options
+        //if (val_size < 10) { //
+        //  val_size = 10; //
+        if (val_size < FLAGS_mix_min_value_size) {
+          val_size = FLAGS_mix_min_value_size;
+        //yhh,byhs::end of modification
         } else if (val_size > value_max) {
           val_size = val_size % value_max;
         }
