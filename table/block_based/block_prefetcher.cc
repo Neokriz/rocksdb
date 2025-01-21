@@ -48,6 +48,12 @@ void BlockPrefetcher::PrefetchIfNeeded(
       }
       //yhh:0121:added to check compaction_readahead_size option work
       //std::cout << "/table/block_based/block_prefetcher.cc::compaction_readahead_size_ : " << compaction_readahead_size_ << std::endl;
+      
+      //yhh:0121:added for L0 prefetching size up test
+      if(rep->level == 0) {
+        compaction_readahead_size_ = 16777216;
+      }
+      //yhh:0121:end of modification
       s = rep->file->Prefetch(opts, offset, len + compaction_readahead_size_);
       if (s.ok()) {
         readahead_limit_ = offset + len + compaction_readahead_size_;
