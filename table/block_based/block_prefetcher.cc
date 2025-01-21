@@ -11,6 +11,9 @@
 #include "rocksdb/file_system.h"
 #include "table/block_based/block_based_table_reader.h"
 
+//yhh:0121:added for logging
+#include "iostream"
+
 namespace ROCKSDB_NAMESPACE {
 void BlockPrefetcher::PrefetchIfNeeded(
     const BlockBasedTable::Rep* rep, const BlockHandle& handle,
@@ -43,6 +46,8 @@ void BlockPrefetcher::PrefetchIfNeeded(
       if (!s.ok()) {
         return;
       }
+      //yhh:0121:added to check compaction_readahead_size option work
+      //std::cout << "/table/block_based/block_prefetcher.cc::compaction_readahead_size_ : " << compaction_readahead_size_ << std::endl;
       s = rep->file->Prefetch(opts, offset, len + compaction_readahead_size_);
       if (s.ok()) {
         readahead_limit_ = offset + len + compaction_readahead_size_;
