@@ -101,3 +101,9 @@ cmake-build-*
 third-party/folly/
 .cache
 *.sublime-*
+
+exp__*.sh
+exp_logs*/
+exp_*/
+db_bench*
+tmp*/
