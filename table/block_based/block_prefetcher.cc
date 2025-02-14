@@ -46,14 +46,6 @@ void BlockPrefetcher::PrefetchIfNeeded(
       if (!s.ok()) {
         return;
       }
-      //yhh:0121:added to check compaction_readahead_size option work
-      //std::cout << "/table/block_based/block_prefetcher.cc::compaction_readahead_size_ : " << compaction_readahead_size_ << std::endl;
-      
-      //yhh:0121:added for L0 prefetching size up test
-      if(rep->level == 0) {
-        compaction_readahead_size_ = 16777216;
-      }
-      //yhh:0121:end of modification
       s = rep->file->Prefetch(opts, offset, len + compaction_readahead_size_);
       if (s.ok()) {
         readahead_limit_ = offset + len + compaction_readahead_size_;
@@ -62,6 +54,19 @@ void BlockPrefetcher::PrefetchIfNeeded(
         return;
       }
     }
+    //yhh:0121:added to check compaction_readahead_size option work
+    ////std::cout << "/table/block_based/block_prefetcher.cc::compaction_readahead_size_ : " << compaction_readahead_size_ << std::endl;
+    ////std::cout << rep->level << std::endl;
+    //yhh:0121:added for L0 prefetching size up test
+    //if(rep->level == 0) {
+      ////std::cout << rep->level << std::endl;
+    //  compaction_readahead_size_ = 2097152 * 8;
+    //}
+    //else {
+    //  compaction_readahead_size_ = 2097152 * 8;
+    //}
+    //yhh:0121:end of modification
+
     // If FS prefetch is not supported, fall back to use internal prefetch
     // buffer.
     //

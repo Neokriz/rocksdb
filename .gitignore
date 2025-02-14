@@ -104,5 +104,6 @@ third-party/folly/
 
 exp__*.sh
 exp_logs*/
+exp_*/
 db_bench*
 tmp*/
