@@ -330,6 +330,12 @@ LIB_SOURCES =                                                   \
   utilities/wal_filter.cc                                       \
   utilities/write_batch_with_index/write_batch_with_index.cc    \
   utilities/write_batch_with_index/write_batch_with_index_internal.cc    \
+  ycsbcore/acknowledged_counter_generator.cc                    		                  \
+  ycsbcore/basic_db.cc                                          		                  \
+  ycsbcore/core_workload.cc                                    		 	                  \
+  ycsbcore/db_factory.cc                                        		                  \
+  ycsbcore/measurements.cc                                      		                  \
+  ycsbcore/ycsbc.cc                                                                   \
 
 ifeq (,$(shell $(CXX) -fsyntax-only -maltivec -xc /dev/null 2>&1))
 LIB_SOURCES_ASM =\
